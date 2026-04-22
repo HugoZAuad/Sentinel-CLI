@@ -6,18 +6,44 @@ export class PortscanService {
   private commonPorts: Record<number, string> = {
     21: 'FTP',
     22: 'SSH',
-    23: 'TELNET',
-    25: 'SMTP',
-    53: 'DNS',
     80: 'HTTP',
-    110: 'POP3',
-    143: 'IMAP',
     443: 'HTTPS',
     3306: 'MySQL',
-    5432: 'PostgreSQL',
-    6379: 'Redis',
-    8080: 'HTTP-ALT',
   };
+
+  getService(port: number): string {
+    return this.commonPorts[port] || 'Unknown';
+  }
+
+  grabBanner(host: string, port: number, timeout = 1000): Promise<string> {
+    return new Promise((resolve) => {
+      const socket = new net.Socket();
+      let banner = '';
+
+      socket.setTimeout(timeout);
+
+      socket.connect(port, host, () => {
+        socket.write('\r\n');
+      });
+
+      socket.on('data', (data) => {
+        banner += data.toString();
+      });
+
+      socket.on('timeout', () => {
+        socket.destroy();
+        resolve(banner.trim() || 'No banner');
+      });
+
+      socket.on('error', () => {
+        resolve('No banner');
+      });
+
+      socket.on('close', () => {
+        resolve(banner.trim() || 'No banner');
+      });
+    });
+  }
 
   scanPort(host: string, port: number, timeout = 1000): Promise<boolean> {
     return new Promise((resolve) => {
@@ -43,12 +69,14 @@ export class PortscanService {
     });
   }
 
-  getService(port: number): string {
-    return this.commonPorts[port] || 'Unknown';
-  }
-
-  async scanRange(host: string, startPort: number, endPort: number) {
-    const results: { port: number; service: string }[] = [];
+  async scanRange(
+    host: string,
+    startPort: number,
+    endPort: number,
+    onProgress?: () => void,
+    onOpenPort?: (data: any) => void,
+  ) {
+    const results: any[] = [];
 
     const ports: number[] = [];
     for (let port = startPort; port <= endPort; port++) {
@@ -63,20 +91,26 @@ export class PortscanService {
       const promises = chunk.map(async (port) => {
         const isOpen = await this.scanPort(host, port);
 
+        if (onProgress) onProgress();
+
         if (isOpen) {
           const service = this.getService(port);
+          const banner = await this.grabBanner(host, port);
 
-          console.log(`🟢 ${port} | ${service}`);
+          const result = { port, service, banner };
 
-          return { port, service };
+          if (onOpenPort) {
+            onOpenPort(result);
+          }
+
+          return result;
         }
 
         return null;
       });
 
       const resultsChunk = await Promise.all(promises);
-
-      results.push(...resultsChunk.filter(Boolean) as { port: number; service: string }[]);
+      results.push(...resultsChunk.filter(Boolean));
     }
 
     return results;
