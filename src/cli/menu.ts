@@ -5,8 +5,8 @@ export async function showMainMenu() {
     {
       type: 'list',
       name: 'option',
-      message: 'Escolha uma opção:',
-      choices: ['Red Team', 'Blue Team', 'Sair'],
+      message: 'Choose an option:',
+      choices: ['Red Team', 'Blue Team', 'Exit'],
     },
   ]);
 

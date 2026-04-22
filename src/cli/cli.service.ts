@@ -11,14 +11,14 @@ export class CliService {
 
       switch (option) {
         case 'Red Team':
-          console.log('Entrando em Red Team...');
+          console.log('Entering Red Team...');
           break;
 
         case 'Blue Team':
-          console.log('Entrando em Blue Team...');
+          console.log('Entering Blue Team...');
           break;
 
-        case 'Sair':
+        case 'Exit':
           running = false;
           break;
       }
