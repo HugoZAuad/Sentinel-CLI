@@ -1,18 +1,31 @@
 import { Injectable } from '@nestjs/common';
 import * as cheerio from 'cheerio';
+import { HttpService } from '../../http/http.service';
+
+interface CrawlResult {
+  links: string[];
+  forms: any[];
+  depth: number;
+}
 
 @Injectable()
 export class CrawlerService {
   private visited = new Set<string>();
   private concurrency = 5;
-  private timeout = 5000;
+  private delay = 200;
+  private baseHost = '';
 
-  async crawl(startUrl: string, depth = 1): Promise<string[]> {
+  constructor(private readonly http: HttpService) {}
+
+  async crawl(startUrl: string, maxDepth = 1) {
     this.visited.clear();
+    this.baseHost = new URL(startUrl).host;
 
     let queue: { url: string; depth: number }[] = [
-      { url: startUrl, depth: 0 },
+      { url: this.normalize(startUrl), depth: 0 },
     ];
+
+    const forms: any[] = [];
 
     while (queue.length > 0) {
       const batch = queue.splice(0, this.concurrency);
@@ -21,35 +34,44 @@ export class CrawlerService {
         batch.map(item => this.processUrl(item.url, item.depth))
       );
 
-      results.forEach(res => {
-        if (!res) return;
+      for (const res of results) {
+        if (!res) continue;
 
-        const { links, depth: currentDepth } = res;
+        if (res.forms.length) {
+          forms.push(...res.forms);
+        }
 
-        if (currentDepth >= depth) return;
+        if (res.depth >= maxDepth) continue;
 
-        links.forEach(link => {
-          if (!this.visited.has(link)) {
-            this.visited.add(link);
-            queue.push({ url: link, depth: currentDepth + 1 });
+        for (const link of res.links) {
+          const normalized = this.normalize(link);
+
+          if (!this.visited.has(normalized)) {
+            this.visited.add(normalized);
+            queue.push({ url: normalized, depth: res.depth + 1 });
           }
-        });
-      });
+        }
+      }
+
+      await this.sleep(this.delay);
     }
 
-    return Array.from(this.visited);
+    return {
+      links: Array.from(this.visited),
+      forms,
+    };
   }
 
-  private async processUrl(url: string, depth: number) {
+  private async processUrl(url: string, depth: number): Promise<CrawlResult | null> {
+    if (!this.isSameDomain(url)) return null;
+
     try {
-      const res = await this.fetchWithTimeout(url);
+      const res = await this.http.get(url);
 
-      const contentType = res.headers.get('content-type') || '';
-
+      const contentType = res.headers['content-type'] || '';
       if (!contentType.includes('text/html')) return null;
 
-      const text = await res.text();
-      const html = text.slice(0, 200000);
+      const html = res.body.slice(0, 200000);
 
       const $ = cheerio.load(html);
 
@@ -68,25 +90,49 @@ export class CrawlerService {
         } catch {}
       });
 
-      return { links, depth };
+      const forms: any[] = [];
+
+      $('form').each((_, form) => {
+        const action = $(form).attr('action') || url;
+        const method = ($(form).attr('method') || 'GET').toUpperCase();
+
+        const inputs: string[] = [];
+
+        $(form)
+          .find('input, textarea')
+          .each((_, input) => {
+            const name = $(input).attr('name');
+            if (name) inputs.push(name);
+          });
+
+        forms.push({
+          action: new URL(action, url).href,
+          method,
+          inputs,
+        });
+      });
+
+      return { links, forms, depth };
     } catch {
       return null;
     }
   }
 
-  private async fetchWithTimeout(url: string) {
-    const controller = new AbortController();
-    const id = setTimeout(() => controller.abort(), this.timeout);
-
+  private normalize(url: string): string {
     try {
-      return await fetch(url, {
-        signal: controller.signal,
-        headers: {
-          'User-Agent': 'Mozilla/5.0',
-        },
-      });
-    } finally {
-      clearTimeout(id);
+      const u = new URL(url);
+      u.hash = '';
+      return u.toString();
+    } catch {
+      return url;
+    }
+  }
+
+  private isSameDomain(url: string): boolean {
+    try {
+      return new URL(url).host === this.baseHost;
+    } catch {
+      return false;
     }
   }
 
@@ -100,5 +146,9 @@ export class CrawlerService {
       url.endsWith('.js') ||
       url.includes('#')
     );
+  }
+
+  private sleep(ms: number) {
+    return new Promise(resolve => setTimeout(resolve, ms));
   }
 }
