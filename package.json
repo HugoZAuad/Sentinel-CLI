@@ -1,6 +1,9 @@
 {
   "name": "sentinel-cli",
   "version": "0.0.1",
+  "bin": {
+    "sentinel-cli": "dist/main.js"
+  },
   "description": "A modular Node.js security platform unifying Red Team reconnaissance and Blue Team auditing into a single, report-driven CLI tool.",
   "author": "HugoZAuad",
   "private": true,
@@ -24,6 +27,7 @@
     "@nestjs/core": "^11.0.1",
     "@nestjs/platform-express": "^11.0.1",
     "chalk": "^5.6.2",
+    "cheerio": "^1.2.0",
     "cli-progress": "^3.12.0",
     "cli-table3": "^0.6.5",
     "commander": "^14.0.3",

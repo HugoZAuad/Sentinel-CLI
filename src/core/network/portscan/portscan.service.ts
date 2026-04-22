@@ -15,7 +15,6 @@ export class PortscanService {
     return this.commonPorts[port] || 'Unknown';
   }
 
-  // 🔍 Banner grabbing
   grabBanner(host: string, port: number, timeout = 1000): Promise<string> {
     return new Promise((resolve) => {
       const socket = new net.Socket();
@@ -24,7 +23,7 @@ export class PortscanService {
       socket.setTimeout(timeout);
 
       socket.connect(port, host, () => {
-        socket.write('\r\n'); // força resposta
+        socket.write('\r\n');
       });
 
       socket.on('data', (data) => {
@@ -43,6 +42,30 @@ export class PortscanService {
       socket.on('close', () => {
         resolve(banner.trim() || 'No banner');
       });
+    });
+  }
+
+  scanPort(host: string, port: number, timeout = 1000): Promise<boolean> {
+    return new Promise((resolve) => {
+      const socket = new net.Socket();
+
+      socket.setTimeout(timeout);
+
+      socket.once('connect', () => {
+        socket.destroy();
+        resolve(true);
+      });
+
+      socket.once('timeout', () => {
+        socket.destroy();
+        resolve(false);
+      });
+
+      socket.once('error', () => {
+        resolve(false);
+      });
+
+      socket.connect(port, host);
     });
   }
 
@@ -91,29 +114,5 @@ export class PortscanService {
     }
 
     return results;
-  }
-
-  scanPort(host: string, port: number, timeout = 1000): Promise<boolean> {
-    return new Promise((resolve) => {
-      const socket = new net.Socket();
-
-      socket.setTimeout(timeout);
-
-      socket.once('connect', () => {
-        socket.destroy();
-        resolve(true);
-      });
-
-      socket.once('timeout', () => {
-        socket.destroy();
-        resolve(false);
-      });
-
-      socket.once('error', () => {
-        resolve(false);
-      });
-
-      socket.connect(port, host);
-    });
   }
 }
