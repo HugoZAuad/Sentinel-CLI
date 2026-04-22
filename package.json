@@ -1,8 +1,8 @@
 {
   "name": "sentinel-cli",
   "version": "0.0.1",
-  "description": "",
-  "author": "",
+  "description": "A modular Node.js security platform unifying Red Team reconnaissance and Blue Team auditing into a single, report-driven CLI tool.",
+  "author": "HugoZAuad",
   "private": true,
   "license": "UNLICENSED",
   "scripts": {
