@@ -2,14 +2,13 @@ import { Injectable } from '@nestjs/common';
 import { HttpService } from '../../core/http/http.service';
 import { PayloadMutator } from './payload/payload.mutator';
 
-type VulnType = 'xss' | 'sqli' | 'redirect';
-
 interface VulnFinding {
   type: string;
   url: string;
   param: string;
   payload: string;
   severity: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+  confidence: 'LOW' | 'MEDIUM' | 'HIGH';
   evidence: string;
 }
 
@@ -23,58 +22,61 @@ export class VulnEngine {
   ) {}
 
   async run(url: string, params: string[]): Promise<VulnFinding[]> {
-    const tasks: (() => Promise<VulnFinding[]>)[] = [];
-
-    for (const param of params) {
-      tasks.push(() => this.testParam(url, param));
-    }
-
-    return this.runWithLimit(tasks, this.concurrency);
+    const tasks = params.map(p => () => this.testParam(url, p));
+    return this.limit(tasks, this.concurrency);
   }
 
   private async testParam(url: string, param: string): Promise<VulnFinding[]> {
     const findings: VulnFinding[] = [];
 
-    const baseRes = await this.safeRequest(url);
-    if (!baseRes) return [];
+    const baseA = await this.safe(url);
+    const baseB = await this.safe(url);
 
-    const baseLength = baseRes.data.length;
+    if (!baseA || !baseB) return [];
+
+    const baseline = (baseA.data.length + baseB.data.length) / 2;
 
     const xssPayloads = this.mutator.generate('xss');
-    const sqliPayloads = this.mutator.generate('sqli');
-    const redirectPayloads = this.mutator.generate('redirect');
 
     for (const payload of xssPayloads) {
-      const target = this.inject(url, param, payload);
-      const res = await this.safeRequest(target);
+      const marker = `xss_${Date.now()}`;
+      const finalPayload = payload.replace('alert(1)', marker);
+
+      const target = this.inject(url, param, finalPayload);
+      const res = await this.safe(target);
 
       if (!res) continue;
 
-      const reflected = res.data.includes(payload);
+      const reflected = res.data.includes(marker);
+      const diff = Math.abs(res.data.length - baseline);
 
-      if (reflected && Math.abs(res.data.length - baseLength) > 5) {
+      if (reflected && diff > 20) {
         findings.push({
           type: 'XSS',
           url: target,
           param,
-          payload,
+          payload: finalPayload,
           severity: 'HIGH',
-          evidence: 'Payload refletido na resposta',
+          confidence: diff > 50 ? 'HIGH' : 'MEDIUM',
+          evidence: 'Reflexão com alteração de resposta',
         });
         break;
       }
     }
 
+    const sqliPayloads = this.mutator.generate('sqli');
+
     for (const payload of sqliPayloads) {
       const target = this.inject(url, param, payload);
 
       const start = Date.now();
-      const res = await this.safeRequest(target);
+      const res = await this.safe(target);
       const time = Date.now() - start;
 
       if (!res) continue;
 
       const body = res.data.toLowerCase();
+      const diff = Math.abs(res.data.length - baseline);
 
       if (
         body.includes('sql') ||
@@ -88,6 +90,7 @@ export class VulnEngine {
           param,
           payload,
           severity: 'CRITICAL',
+          confidence: 'HIGH',
           evidence: 'Erro SQL detectado',
         });
         break;
@@ -100,27 +103,31 @@ export class VulnEngine {
           param,
           payload,
           severity: 'CRITICAL',
+          confidence: 'HIGH',
           evidence: `Delay detectado (${time}ms)`,
         });
         break;
       }
 
-      if (Math.abs(res.data.length - baseLength) > 50) {
+      if (diff > 80) {
         findings.push({
           type: 'SQL Injection',
           url: target,
           param,
           payload,
           severity: 'HIGH',
+          confidence: 'MEDIUM',
           evidence: 'Diferença significativa de resposta',
         });
         break;
       }
     }
 
+    const redirectPayloads = this.mutator.generate('redirect');
+
     for (const payload of redirectPayloads) {
       const target = this.inject(url, param, payload);
-      const res = await this.safeRequest(target, false);
+      const res = await this.safe(target, false);
 
       if (!res) continue;
 
@@ -134,6 +141,7 @@ export class VulnEngine {
             param,
             payload,
             severity: 'MEDIUM',
+            confidence: 'HIGH',
             evidence: `Redirect para ${location}`,
           });
           break;
@@ -150,7 +158,7 @@ export class VulnEngine {
     return u.toString();
   }
 
-  private async safeRequest(url: string, followRedirect = true) {
+  private async safe(url: string, followRedirect = true) {
     try {
       return await this.http.get(url, { followRedirect });
     } catch {
@@ -158,31 +166,21 @@ export class VulnEngine {
     }
   }
 
-  private async runWithLimit(
-    tasks: (() => Promise<VulnFinding[]>)[],
-    limit: number,
-  ): Promise<VulnFinding[]> {
-    const results: VulnFinding[] = [];
-    const executing: Promise<void>[] = [];
+  private async limit(tasks: any[], limit: number) {
+    const results: any[] = [];
+    const running: Promise<void>[] = [];
 
     for (const task of tasks) {
-      const p = task().then(res => {
-        results.push(...res);
-      });
+      const p = task().then(r => results.push(...r));
+      running.push(p);
 
-      executing.push(p);
-
-      if (executing.length >= limit) {
-        await Promise.race(executing);
-        executing.splice(
-          executing.findIndex(e => e === p),
-          1,
-        );
+      if (running.length >= limit) {
+        await Promise.race(running);
+        running.splice(running.indexOf(p), 1);
       }
     }
 
-    await Promise.all(executing);
-
+    await Promise.all(running);
     return results;
   }
 }
