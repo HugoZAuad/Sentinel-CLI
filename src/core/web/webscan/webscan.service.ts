@@ -6,6 +6,7 @@ import { CrawlerService } from '../crawler/crawler.service';
 import { EndpointService } from '../endpoint/endpoint.service';
 
 interface ScanSuccess {
+  formFindings: any;
   url: string;
   status: number;
   time: string;
@@ -64,6 +65,7 @@ export class WebscanService {
       const loginForm = await this.auth.detectLoginForm(url);
 
       return {
+        formFindings: [],
         url,
         status: res.status,
         time: `${Date.now() - start}ms`,
