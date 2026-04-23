@@ -5,42 +5,7 @@ import { VulnEngine } from '../../vuln/vuln.engine';
 import { CrawlerService } from '../crawler/crawler.service';
 import { EndpointService } from '../endpoint/endpoint.service';
 import { FormScannerService } from '../formscanner/form-scanner.service';
-
-export interface WebScanResult {
-  url: string;
-  status: number;
-  time: string;
-  https: boolean;
-
-  headers: Record<string, string>;
-  tech: string[];
-
-  security: {
-    hsts: boolean;
-    xss: boolean;
-    contentType: boolean;
-    frame: boolean;
-  };
-
-  links: string[];
-  endpoints: string[];
-  forms: any[];
-  formFindings: any[];
-
-  vulnerabilities: any[];
-
-  securityScore: {
-    score: number;
-    grade: string;
-    riskLevel: string;
-    breakdown: any[];
-  };
-
-  meta: {
-    scannedUrls: number;
-    duration: number;
-  };
-}
+import { WebScanResult } from './webscan.types';
 
 @Injectable()
 export class WebscanService {
@@ -73,13 +38,13 @@ export class WebscanService {
       const endpoints = await this.endpoint.discover(url);
       const forms = await this.form.scan(url);
 
-      const formFindings: any[] = [];
-
-      const targets = this.buildTargets(url, links, endpoints);
+      const targets = this.prioritize([
+        ...new Set([url, ...links, ...endpoints]),
+      ]);
 
       const vulnerabilities = await this.runVuln(targets);
 
-      const securityScore = this.score.calculate(vulnerabilities);
+      const score = this.score.calculate(vulnerabilities);
 
       return {
         url,
@@ -92,9 +57,8 @@ export class WebscanService {
         links,
         endpoints,
         forms,
-        formFindings,
         vulnerabilities,
-        securityScore,
+        score,
         meta: {
           scannedUrls: targets.length,
           duration: Date.now() - start,
@@ -105,12 +69,11 @@ export class WebscanService {
     }
   }
 
-  private buildTargets(
-    base: string,
-    links: string[],
-    endpoints: string[],
-  ): string[] {
-    return [...new Set([base, ...links, ...endpoints])].slice(0, 15);
+  private prioritize(urls: string[]): string[] {
+    return urls
+      .filter(u => u.includes('?'))
+      .concat(urls)
+      .slice(0, 20);
   }
 
   private async runVuln(targets: string[]): Promise<any[]> {
@@ -118,11 +81,9 @@ export class WebscanService {
 
     for (const target of targets) {
       const params = this.extractParams(target);
-
       if (params.length === 0) continue;
 
       const vulns = await this.vuln.run(target, params);
-
       results.push(...vulns);
     }
 
@@ -132,17 +93,14 @@ export class WebscanService {
   private extractParams(url: string): string[] {
     const query = url.split('?')[1];
     if (!query) return [];
-
     return query.split('&').map(p => p.split('=')[0]);
   }
 
   private normalizeHeaders(headers: any): Record<string, string> {
     const result: Record<string, string> = {};
-
     Object.keys(headers || {}).forEach(k => {
       result[k.toLowerCase()] = headers[k];
     });
-
     return result;
   }
 

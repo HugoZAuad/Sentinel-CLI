@@ -2,6 +2,12 @@ import { Injectable } from '@nestjs/common';
 import { HttpService } from '../../../core/http/http.service';
 import { PayloadMutator } from '../../vuln/payload/payload.mutator';
 
+interface FormResult {
+  action: string;
+  method: string;
+  findings: string[];
+}
+
 @Injectable()
 export class FormScannerService {
   constructor(
@@ -9,14 +15,14 @@ export class FormScannerService {
     private readonly mutator: PayloadMutator,
   ) {}
 
-  async scan(url: string): Promise<any[]> {
+  async scan(url: string): Promise<FormResult[]> {
     const res = await this.http.get(url);
 
     if (!res || !res.data) return [];
 
     const forms = this.extractForms(res.data, url);
 
-    const results: any[] = [];
+    const results: FormResult[] = [];
 
     for (const form of forms) {
       const findings = await this.testForm(form);
@@ -60,43 +66,62 @@ export class FormScannerService {
   private extractInputs(formHtml: string): string[] {
     const inputs: string[] = [];
 
-    const inputRegex = /<input[^>]*name=["']?([^"'\s>]+)["']?[^>]*>/gi;
+    const inputRegex =
+      /<(input|textarea|select)[^>]*name=["']?([^"'\s>]+)["']?[^>]*>/gi;
 
     let match;
     while ((match = inputRegex.exec(formHtml))) {
-      inputs.push(match[1]);
+      inputs.push(match[2]);
     }
 
-    return inputs;
+    return [...new Set(inputs)];
   }
 
   private async testForm(form: any): Promise<string[]> {
     const findings: string[] = [];
 
+    const baseRes = await this.send(form, this.buildData(form.inputs, 'test'));
+    if (!baseRes) return [];
+
+    const baseline = baseRes.data.length;
+
     const xssPayloads = this.mutator.generate('xss');
     const sqliPayloads = this.mutator.generate('sqli');
 
     for (const payload of xssPayloads) {
-      const data = this.buildData(form.inputs, payload);
+      const marker = `xss_${Date.now()}`;
+      const finalPayload = payload.replace('alert(1)', marker);
 
-      const res = await this.send(form, data);
+      const res = await this.send(
+        form,
+        this.buildData(form.inputs, finalPayload),
+      );
 
-      if (res && res.data && res.data.includes(payload)) {
-        findings.push(`XSS possível com payload: ${payload}`);
+      if (!res) continue;
+
+      const reflected = res.data.includes(marker);
+      const diff = Math.abs(res.data.length - baseline);
+
+      if (reflected && diff > 20) {
+        findings.push(`XSS confirmado (${form.action})`);
         break;
       }
     }
 
     for (const payload of sqliPayloads) {
-      const data = this.buildData(form.inputs, payload);
-
       const start = Date.now();
-      const res = await this.send(form, data);
+
+      const res = await this.send(
+        form,
+        this.buildData(form.inputs, payload),
+      );
+
       const time = Date.now() - start;
 
       if (!res) continue;
 
       const body = res.data.toLowerCase();
+      const diff = Math.abs(res.data.length - baseline);
 
       if (
         body.includes('sql') ||
@@ -104,12 +129,17 @@ export class FormScannerService {
         body.includes('mysql') ||
         body.includes('error')
       ) {
-        findings.push(`SQLi possível (erro): ${payload}`);
+        findings.push(`SQLi erro detectado (${form.action})`);
         break;
       }
 
       if (time > 3000) {
-        findings.push(`SQLi possível (delay): ${payload}`);
+        findings.push(`SQLi delay detectado (${form.action})`);
+        break;
+      }
+
+      if (diff > 80) {
+        findings.push(`SQLi possível (diferença resposta)`);
         break;
       }
     }
@@ -117,7 +147,10 @@ export class FormScannerService {
     return findings;
   }
 
-  private buildData(inputs: string[], payload: string): Record<string, string> {
+  private buildData(
+    inputs: string[],
+    payload: string,
+  ): Record<string, string> {
     const data: Record<string, string> = {};
 
     inputs.forEach(name => {

@@ -7,86 +7,70 @@ interface HttpOptions {
   headers?: Record<string, string>;
 }
 
-interface HttpResponse {
-  status: number;
-  headers: Record<string, string>;
-  data: string;
-}
-
 @Injectable()
 export class HttpService {
-  async get(url: string, options?: HttpOptions): Promise<HttpResponse | null> {
-    try {
-      const config: AxiosRequestConfig = {
-        url,
-        method: 'GET',
-        timeout: options?.timeout ?? 10000,
-        maxRedirects: options?.followRedirect === false ? 0 : 5,
-        headers: {
-          'User-Agent': 'SentinelCLI/1.0',
-          ...(options?.headers || {}),
-        },
-        validateStatus: () => true,
-      };
+  async get(url: string, options?: HttpOptions) {
+    const config: AxiosRequestConfig = {
+      url,
+      method: 'GET',
+      timeout: options?.timeout ?? 10000,
+      maxRedirects: options?.followRedirect === false ? 0 : 5,
+      headers: {
+        'User-Agent': 'SentinelCLI/1.0',
+        ...(options?.headers || {}),
+      },
+      validateStatus: () => true,
+    };
 
-      const res: AxiosResponse = await axios(config);
-
-      return {
-        status: res.status,
-        headers: this.normalizeHeaders(res.headers),
-        data: this.parseData(res.data),
-      };
-    } catch {
-      return null;
-    }
+    return this.request(config);
   }
 
-  async post(
-    url: string,
-    body: any,
-    options?: HttpOptions,
-  ): Promise<HttpResponse | null> {
-    try {
-      const config: AxiosRequestConfig = {
-        url,
-        method: 'POST',
-        data: body,
-        timeout: options?.timeout ?? 10000,
-        maxRedirects: options?.followRedirect === false ? 0 : 5,
-        headers: {
-          'User-Agent': 'SentinelCLI/1.0',
-          'Content-Type': 'application/x-www-form-urlencoded',
-          ...(options?.headers || {}),
-        },
-        validateStatus: () => true,
-      };
+  async post(url: string, body: any, options?: HttpOptions) {
+    const config: AxiosRequestConfig = {
+      url,
+      method: 'POST',
+      data: body,
+      timeout: options?.timeout ?? 10000,
+      maxRedirects: options?.followRedirect === false ? 0 : 5,
+      headers: {
+        'User-Agent': 'SentinelCLI/1.0',
+        'Content-Type': 'application/x-www-form-urlencoded',
+        ...(options?.headers || {}),
+      },
+      validateStatus: () => true,
+    };
 
-      const res: AxiosResponse = await axios(config);
-
-      return {
-        status: res.status,
-        headers: this.normalizeHeaders(res.headers),
-        data: this.parseData(res.data),
-      };
-    } catch {
-      return null;
-    }
+    return this.request(config);
   }
 
-  private parseData(data: any): string {
-    if (!data) return '';
-    if (typeof data === 'string') return data;
-    return JSON.stringify(data);
+  private async request(config: AxiosRequestConfig) {
+    for (let i = 0; i < 2; i++) {
+      try {
+        const res: AxiosResponse = await axios(config);
+
+        return {
+          status: res.status,
+          headers: this.normalizeHeaders(res.headers),
+          data:
+            typeof res.data === 'string'
+              ? res.data
+              : JSON.stringify(res.data),
+        };
+      } catch {
+        if (i === 1) return null;
+        await new Promise(r => setTimeout(r, 300));
+      }
+    }
   }
 
   private normalizeHeaders(headers: any): Record<string, string> {
     const result: Record<string, string> = {};
 
-    Object.keys(headers || {}).forEach(key => {
-      const value = headers[key];
-      result[key.toLowerCase()] = Array.isArray(value)
-        ? value.join('; ')
-        : String(value);
+    Object.keys(headers || {}).forEach(k => {
+      const v = headers[k];
+      result[k.toLowerCase()] = Array.isArray(v)
+        ? v.join('; ')
+        : String(v);
     });
 
     return result;

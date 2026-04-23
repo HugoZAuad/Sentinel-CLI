@@ -211,10 +211,10 @@ export class CliService {
 
     console.log('\n🧪 Form Scanner:');
 
-    if (!result.formFindings || result.formFindings.length === 0) {
+    if (!result.forms || result.forms.length === 0) {
       console.log(chalk.green('Nenhuma vulnerabilidade em formulários'));
     } else {
-      result.formFindings.forEach(f => {
+      result.forms.forEach(f => {
         console.log(`\n🎯 ${f.action}`);
         f.findings.forEach((x: string) =>
           console.log(chalk.red(`- ${x}`))

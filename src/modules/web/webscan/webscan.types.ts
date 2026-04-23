@@ -16,9 +16,16 @@ export interface WebScanResult {
 
   links: string[];
   endpoints: string[];
-  forms: any[];
+
+  forms: {
+    action: string;
+    method: string;
+    findings: string[];
+  }[];
 
   vulnerabilities: any[];
+
+  score?: any;
 
   meta: {
     scannedUrls: number;

@@ -1,27 +1,70 @@
 import { Injectable } from '@nestjs/common';
+import { HttpService } from '../../../core/http/http.service';
 
 @Injectable()
 export class CrawlerService {
-  async crawl(url: string, depth: number): Promise<string[]> {
+  constructor(private readonly http: HttpService) {}
+
+  async crawl(url: string, depth = 1): Promise<string[]> {
+    const visited = new Set<string>();
+    const results = new Set<string>();
+
+    await this.walk(url, depth, visited, results);
+
+    return Array.from(results);
+  }
+
+  private async walk(
+    url: string,
+    depth: number,
+    visited: Set<string>,
+    results: Set<string>,
+  ) {
+    if (depth === 0) return;
+    if (visited.has(url)) return;
+
+    visited.add(url);
+
+    const res = await this.http.get(url);
+    if (!res || !res.data) return;
+
+    const links = this.extractLinks(res.data, url);
+
+    for (const link of links) {
+      if (!this.isValid(link)) continue;
+
+      results.add(link);
+
+      await this.walk(link, depth - 1, visited, results);
+    }
+  }
+
+  private extractLinks(html: string, base: string): string[] {
     const links: string[] = [];
 
-    try {
-      const res = await fetch(url);
-      const html = await res.text();
+    const regex = /href=["'](.*?)["']/gi;
+    let match;
 
-      const matches = html.match(/href=["'](.*?)["']/g) || [];
+    while ((match = regex.exec(html))) {
+      try {
+        const raw = match[1].trim();
 
-      matches.forEach(m => {
-        const link = m.replace(/href=["']/, '').replace(/["']$/, '');
+        if (!raw) continue;
+        if (raw.startsWith('#')) continue;
+        if (raw.startsWith('javascript:')) continue;
 
-        if (!link.startsWith('http')) return;
+        const url = new URL(raw, base).toString();
 
-        if (!link.match(/\.(png|jpg|css|js|svg)$/)) {
-          links.push(link);
-        }
-      });
-    } catch {}
+        links.push(url);
+      } catch {}
+    }
 
-    return [...new Set(links)];
+    return links;
+  }
+
+  private isValid(url: string): boolean {
+    return !url.match(
+      /\.(jpg|jpeg|png|gif|css|svg|js|ico|woff|ttf|map)$/i,
+    );
   }
 }
