@@ -1,8 +1,10 @@
 import { Module } from '@nestjs/common';
-import { HttpModule } from '../../http/http.module';
-import { AuthModule } from '../auth/auth.module';
+import { HttpModule } from '../../../core/http/http.module';
+import { ScoreModule } from '../../score/score.module';
+import { VulnModule } from '../../vuln/vuln.module';
 import { CrawlerModule } from '../crawler/crawler.module';
 import { EndpointModule } from '../endpoint/endpoint.module';
+import { FormScannerModule } from '../formscanner/form-scanner.module';
 import { WebscanService } from './webscan.service';
 
 @Module({
@@ -10,7 +12,9 @@ import { WebscanService } from './webscan.service';
     HttpModule,
     CrawlerModule,
     EndpointModule,
-    AuthModule,
+    FormScannerModule,
+    VulnModule,
+    ScoreModule,
   ],
   providers: [WebscanService],
   exports: [WebscanService],
