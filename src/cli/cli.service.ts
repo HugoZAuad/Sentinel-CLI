@@ -3,8 +3,8 @@ import chalk from 'chalk';
 import cliProgress from 'cli-progress';
 import Table from 'cli-table3';
 import inquirer from 'inquirer';
-import { PortscanService } from '../core/network/portscan/portscan.service';
-import { WebscanService } from '../core/web/webscan/webscan.service';
+import { PortscanService } from '../modules/network/portscan/portscan.service';
+import { WebscanService } from '../modules/web/webscan/webscan.service';
 import { saveReport } from '../shared/utils/report.util';
 
 const prompt = inquirer.createPromptModule();

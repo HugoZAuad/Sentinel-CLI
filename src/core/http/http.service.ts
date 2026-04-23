@@ -1,82 +1,50 @@
 import { Injectable } from '@nestjs/common';
 
-export interface HttpOptions {
-  method?: 'GET' | 'POST';
-  headers?: Record<string, string>;
-  body?: any;
-  timeout?: number;
-  retries?: number;
-}
-
-export interface HttpResponse {
-  status: number;
-  headers: Record<string, string>;
-  body: string;
-}
-
 @Injectable()
 export class HttpService {
-  private defaultTimeout = 5000;
-  private defaultRetries = 2;
+  async get(url: string): Promise<{
+    status: number;
+    headers: Record<string, string>;
+    data: string;
+  } | null> {
+    try {
+      const res = await fetch(url);
 
-  async request(url: string, options: HttpOptions = {}): Promise<HttpResponse> {
-    const {
-      method = 'GET',
-      headers = {},
-      body,
-      timeout = this.defaultTimeout,
-      retries = this.defaultRetries,
-    } = options;
+      const text = await res.text();
 
-    let lastError: any;
-
-    for (let attempt = 0; attempt <= retries; attempt++) {
-      try {
-        const controller = new AbortController();
-        const id = setTimeout(() => controller.abort(), timeout);
-
-        const response = await fetch(url, {
-          method,
-          headers: {
-            'User-Agent': 'Mozilla/5.0',
-            ...headers,
-          },
-          body: body ? JSON.stringify(body) : undefined,
-          signal: controller.signal,
-        });
-
-        clearTimeout(id);
-
-        const text = await response.text();
-
-        return {
-          status: response.status,
-          headers: Object.fromEntries(response.headers.entries()),
-          body: text,
-        };
-      } catch (error) {
-        lastError = error;
-
-        if (attempt === retries) break;
-      }
+      return {
+        status: res.status,
+        headers: Object.fromEntries(res.headers.entries()),
+        data: text,
+      };
+    } catch {
+      return null;
     }
-
-    throw lastError;
   }
 
-  async get(url: string, options?: HttpOptions): Promise<HttpResponse> {
-    return this.request(url, { ...options, method: 'GET' });
-  }
+  async post(url: string, data: Record<string, string>): Promise<{
+    status: number;
+    headers: Record<string, string>;
+    data: string;
+  } | null> {
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: new URLSearchParams(data).toString(),
+      });
 
-  async post(url: string, body: any, options?: HttpOptions): Promise<HttpResponse> {
-    return this.request(url, {
-      ...options,
-      method: 'POST',
-      body,
-      headers: {
-        'Content-Type': 'application/json',
-        ...(options?.headers || {}),
-      },
-    });
+      const text = await res.text();
+
+      return {
+        status: res.status,
+        headers: Object.fromEntries(res.headers.entries()),
+        data: text,
+      };
+    } catch {
+      return null;
+    }
   }
 }
