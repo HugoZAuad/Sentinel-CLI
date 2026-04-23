@@ -1,4 +1,17 @@
 import { Injectable } from '@nestjs/common';
+import { HttpService } from '../../http/http.service';
+
+export interface FormInput {
+  action: string;
+  method: 'GET' | 'POST';
+  inputs: string[];
+}
+
+export interface FormFinding {
+  action: string;
+  method: string;
+  findings: string[];
+}
 
 @Injectable()
 export class FormScannerService {
@@ -7,8 +20,10 @@ export class FormScannerService {
     sqli: `' OR '1'='1`,
   };
 
-  async scanForms(forms: any[]) {
-    const results: any[] = [];
+  constructor(private readonly http: HttpService) {}
+
+  async scanForms(forms: FormInput[]): Promise<FormFinding[]> {
+    const results: FormFinding[] = [];
 
     for (const form of forms) {
       const result = await this.testForm(form);
@@ -18,7 +33,7 @@ export class FormScannerService {
     return results;
   }
 
-  private async testForm(form: any) {
+  private async testForm(form: FormInput): Promise<FormFinding | null> {
     const findings: string[] = [];
 
     for (const input of form.inputs) {
@@ -42,39 +57,27 @@ export class FormScannerService {
     };
   }
 
-  private async sendPayload(form: any, input: string, payload: string) {
+  private async sendPayload(
+    form: FormInput,
+    input: string,
+    payload: string,
+  ): Promise<string> {
     try {
       const data: Record<string, string> = {};
 
-      form.inputs.forEach((i: string) => {
+      form.inputs.forEach(i => {
         data[i] = i === input ? payload : 'test';
       });
 
       if (form.method === 'POST') {
-        const res = await fetch(form.action, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'User-Agent': 'Mozilla/5.0',
-          },
-          body: JSON.stringify(data),
-        });
-
-        return await res.text();
+        const res = await this.http.post(form.action, data);
+        return res.body;
       } else {
         const url = new URL(form.action);
+        Object.entries(data).forEach(([k, v]) => url.searchParams.set(k, v));
 
-        Object.entries(data).forEach(([k, v]) => {
-          url.searchParams.set(k, v);
-        });
-
-        const res = await fetch(url.toString(), {
-          headers: {
-            'User-Agent': 'Mozilla/5.0',
-          },
-        });
-
-        return await res.text();
+        const res = await this.http.get(url.toString());
+        return res.body;
       }
     } catch {
       return '';
@@ -91,7 +94,6 @@ export class FormScannerService {
     ];
 
     const lower = response.toLowerCase();
-
     return errors.some(e => lower.includes(e));
   }
 }
