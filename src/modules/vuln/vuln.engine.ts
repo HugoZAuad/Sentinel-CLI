@@ -1,170 +1,188 @@
 import { Injectable } from '@nestjs/common';
 import { HttpService } from '../../core/http/http.service';
-import { runWithLimit } from '../../shared/utils/concurrency.util';
 import { PayloadMutator } from './payload/payload.mutator';
 
-type Confidence = 'low' | 'medium' | 'high';
+type VulnType = 'xss' | 'sqli' | 'redirect';
 
-interface Finding {
+interface VulnFinding {
   type: string;
   url: string;
   param: string;
   payload: string;
-  confidence: Confidence;
+  severity: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+  evidence: string;
 }
 
 @Injectable()
 export class VulnEngine {
-  private CONCURRENCY = 5;
+  private concurrency = 5;
 
   constructor(
     private readonly http: HttpService,
     private readonly mutator: PayloadMutator,
   ) {}
 
-  async run(url: string, params: string[]): Promise<Finding[]> {
-    const tasks: (() => Promise<Finding | null>)[] = [];
+  async run(url: string, params: string[]): Promise<VulnFinding[]> {
+    const tasks: (() => Promise<VulnFinding[]>)[] = [];
 
     for (const param of params) {
-      tasks.push(() => this.testXSS(url, param));
-      tasks.push(() => this.testSQLi(url, param));
-      tasks.push(() => this.testRedirect(url, param));
+      tasks.push(() => this.testParam(url, param));
     }
 
-    const results = await runWithLimit(tasks, this.CONCURRENCY);
-
-    return results.filter((r): r is Finding => r !== null);
+    return this.runWithLimit(tasks, this.concurrency);
   }
 
-  private async testXSS(url: string, param: string): Promise<Finding | null> {
-    const payloads = this.mutator.generate('xss');
+  private async testParam(url: string, param: string): Promise<VulnFinding[]> {
+    const findings: VulnFinding[] = [];
 
-    for (const payload of payloads) {
+    const baseRes = await this.safeRequest(url);
+    if (!baseRes) return [];
+
+    const baseLength = baseRes.data.length;
+
+    const xssPayloads = this.mutator.generate('xss');
+    const sqliPayloads = this.mutator.generate('sqli');
+    const redirectPayloads = this.mutator.generate('redirect');
+
+    for (const payload of xssPayloads) {
       const target = this.inject(url, param, payload);
+      const res = await this.safeRequest(target);
 
-      const res = await this.http.get(target);
       if (!res) continue;
 
       const reflected = res.data.includes(payload);
-      if (!reflected) continue;
 
-      const executable =
-        res.data.includes(`<script>${payload}</script>`) ||
-        res.data.includes(`onerror=${payload}`) ||
-        res.data.includes(`onload=${payload}`);
-
-      return {
-        type: 'XSS',
-        url: target,
-        param,
-        payload,
-        confidence: executable ? 'high' : 'medium',
-      };
+      if (reflected && Math.abs(res.data.length - baseLength) > 5) {
+        findings.push({
+          type: 'XSS',
+          url: target,
+          param,
+          payload,
+          severity: 'HIGH',
+          evidence: 'Payload refletido na resposta',
+        });
+        break;
+      }
     }
 
-    return null;
-  }
-
-  private async testSQLi(url: string, param: string): Promise<Finding | null> {
-    const payloads = this.mutator.generate('sqli');
-
-    const base = await this.http.get(url);
-    if (!base) return null;
-
-    for (const payload of payloads) {
+    for (const payload of sqliPayloads) {
       const target = this.inject(url, param, payload);
 
-      const injected = await this.http.get(target);
-      if (!injected) continue;
+      const start = Date.now();
+      const res = await this.safeRequest(target);
+      const time = Date.now() - start;
 
-      const body = injected.data.toLowerCase();
+      if (!res) continue;
 
-      const errorBased =
+      const body = res.data.toLowerCase();
+
+      if (
         body.includes('sql') ||
         body.includes('syntax') ||
         body.includes('mysql') ||
-        body.includes('warning');
-
-      const diffLength =
-        Math.abs(base.data.length - injected.data.length) > 20;
-
-      if (errorBased) {
-        return {
-          type: 'SQLi',
+        body.includes('error')
+      ) {
+        findings.push({
+          type: 'SQL Injection',
           url: target,
           param,
           payload,
-          confidence: 'high',
-        };
+          severity: 'CRITICAL',
+          evidence: 'Erro SQL detectado',
+        });
+        break;
       }
 
-      if (diffLength) {
-        return {
-          type: 'SQLi',
+      if (time > 3000) {
+        findings.push({
+          type: 'SQL Injection',
           url: target,
           param,
           payload,
-          confidence: 'medium',
-        };
+          severity: 'CRITICAL',
+          evidence: `Delay detectado (${time}ms)`,
+        });
+        break;
+      }
+
+      if (Math.abs(res.data.length - baseLength) > 50) {
+        findings.push({
+          type: 'SQL Injection',
+          url: target,
+          param,
+          payload,
+          severity: 'HIGH',
+          evidence: 'Diferença significativa de resposta',
+        });
+        break;
       }
     }
 
-    const timePayload = `' OR sleep(3) --`;
-    const target = this.inject(url, param, timePayload);
-
-    const start = Date.now();
-    await this.http.get(target);
-    const delay = Date.now() - start;
-
-    if (delay > 2500) {
-      return {
-        type: 'SQLi',
-        url: target,
-        param,
-        payload: timePayload,
-        confidence: 'high',
-      };
-    }
-
-    return null;
-  }
-
-  private async testRedirect(url: string, param: string): Promise<Finding | null> {
-    const payloads = this.mutator.generate('redirect');
-
-    for (const payload of payloads) {
+    for (const payload of redirectPayloads) {
       const target = this.inject(url, param, payload);
+      const res = await this.safeRequest(target, false);
 
-      const res = await this.http.get(target);
       if (!res) continue;
 
       if (res.status === 301 || res.status === 302) {
-        const location = res.headers['location'];
+        const location = res.headers['location'] || '';
 
-        if (location) {
-          try {
-            const host = new URL(location).hostname;
-
-            if (host.includes('evil.com')) {
-              return {
-                type: 'Open Redirect',
-                url: target,
-                param,
-                payload,
-                confidence: 'high',
-              };
-            }
-          } catch {}
+        if (location.includes('evil.com') && !location.includes(new URL(url).hostname)) {
+          findings.push({
+            type: 'Open Redirect',
+            url: target,
+            param,
+            payload,
+            severity: 'MEDIUM',
+            evidence: `Redirect para ${location}`,
+          });
+          break;
         }
       }
     }
 
-    return null;
+    return findings;
   }
 
   private inject(url: string, param: string, payload: string): string {
-    const parsed = new URL(url);
-    parsed.searchParams.set(param, payload);
-    return parsed.toString();
+    const u = new URL(url);
+    u.searchParams.set(param, payload);
+    return u.toString();
+  }
+
+  private async safeRequest(url: string, followRedirect = true) {
+    try {
+      return await this.http.get(url, { followRedirect });
+    } catch {
+      return null;
+    }
+  }
+
+  private async runWithLimit(
+    tasks: (() => Promise<VulnFinding[]>)[],
+    limit: number,
+  ): Promise<VulnFinding[]> {
+    const results: VulnFinding[] = [];
+    const executing: Promise<void>[] = [];
+
+    for (const task of tasks) {
+      const p = task().then(res => {
+        results.push(...res);
+      });
+
+      executing.push(p);
+
+      if (executing.length >= limit) {
+        await Promise.race(executing);
+        executing.splice(
+          executing.findIndex(e => e === p),
+          1,
+        );
+      }
+    }
+
+    await Promise.all(executing);
+
+    return results;
   }
 }
