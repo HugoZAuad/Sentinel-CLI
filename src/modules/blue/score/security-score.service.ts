@@ -1,27 +1,42 @@
 import { Injectable } from "@nestjs/common";
 import type { VulnFinding } from "../../red/web/vuln/vuln-check.interface";
+import { CONFIDENCE_WEIGHT, SEVERITY_WEIGHT } from "./score.constants";
 
 @Injectable()
 export class SecurityScoreService {
-  calculate(vulnerabilities: VulnFinding[]): any {
-    let score = 100;
+  
+  calculate(vulnerabilities: VulnFinding[]) {
+    let penaltyTotal = 0;
 
     vulnerabilities.forEach(v => {
-      if (v.severity === 'CRITICAL') score -= 30;
-      if (v.severity === 'HIGH') score -= 20;
-      if (v.severity === 'MEDIUM') score -= 10;
-      if (v.severity === 'LOW') score -= 5;
+      const severity = v.severity.toLowerCase() as keyof typeof SEVERITY_WEIGHT;
+      const confidence = (v.confidence?.toLowerCase() || 'medium') as keyof typeof CONFIDENCE_WEIGHT;
+
+      const baseWeight = SEVERITY_WEIGHT[severity] || 0;
+      const weightMultiplier = CONFIDENCE_WEIGHT[confidence] || 0.8;
+
+      penaltyTotal += baseWeight * weightMultiplier;
     });
 
+    const finalScore = Math.max(0, 100 - penaltyTotal);
+
     return {
-      value: Math.max(0, score),
-      grade: this.getGrade(score)
+      value: Number(finalScore.toFixed(2)),
+      grade: this.getGrade(finalScore),
+      metrics: {
+        totalVulnerabilities: vulnerabilities.length,
+        criticalCount: vulnerabilities.filter(v => v.severity.toUpperCase() === 'CRITICAL').length,
+        highCount: vulnerabilities.filter(v => v.severity.toUpperCase() === 'HIGH').length
+      }
     };
   }
 
   private getGrade(score: number): string {
-    if (score > 80) return 'A';
-    if (score > 60) return 'B';
-    return 'C';
+    if (score >= 90) return 'A+';
+    if (score >= 80) return 'A';
+    if (score >= 70) return 'B';
+    if (score >= 60) return 'C';
+    if (score >= 40) return 'D';
+    return 'F';
   }
 }
