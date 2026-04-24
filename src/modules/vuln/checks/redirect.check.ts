@@ -1,42 +1,42 @@
+import { Injectable } from '@nestjs/common';
 import { HttpService } from '../../../core/http/http.service';
+import { IVulnCheck, VulnFinding } from '../vuln-check.interface';
 
-export class RedirectCheck {
+@Injectable()
+export class RedirectCheck implements IVulnCheck {
+  readonly name = 'Open Redirect';
+
   constructor(private readonly http: HttpService) {}
 
-  async run(url: string, param: string, payloads: string[]) {
-    for (const payload of payloads) {
-      const target = this.inject(url, param, payload);
+  async run(url: string, param: string, method: string): Promise<VulnFinding[]> {
+    const findings: VulnFinding[] = [];
+    const payload = 'https://google.com';
+    
+    try {
+      const res = await (method === 'POST' 
+        ? this.http.post(url, { [param]: payload }) 
+        : this.http.get(`${url}?${param}=${payload}`));
 
-      const res = await this.http.get(target);
-      if (!res) continue;
+      if (res && typeof res.status === 'number') {
+        
+        const isRedirect = res.status >= 300 && res.status < 400;
+        const locationHeader = res.headers?.['location'];
 
-      if (res.status === 301 || res.status === 302) {
-        const location = res.headers?.['location'];
-
-        if (!location) continue;
-
-        try {
-          const host = new URL(location).hostname;
-
-          if (host.includes('evil.com')) {
-            return {
-              type: 'Open Redirect',
-              url: target,
-              param,
-              payload,
-              confidence: 'high',
-            };
-          }
-        } catch {}
+        if (isRedirect && locationHeader?.includes(payload)) {
+          findings.push({
+            type: 'Open Redirect',
+            severity: 'MEDIUM',
+            confidence: 'high',
+            evidence: `Redirecionamento externo detectado via status ${res.status}. Header Location: ${locationHeader}`,
+            payload,
+            target: url,
+            param
+          });
+        }
       }
+    } catch (error) {
     }
 
-    return null;
-  }
-
-  private inject(url: string, param: string, payload: string): string {
-    const parsed = new URL(url);
-    parsed.searchParams.set(param, payload);
-    return parsed.toString();
+    return findings;
   }
 }

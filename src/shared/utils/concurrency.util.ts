@@ -1,25 +1,22 @@
-export async function runWithLimit<T>(
-  tasks: (() => Promise<T>)[],
+export async function promisePool<T>(
+  factories: (() => Promise<T>)[],
   limit: number,
 ): Promise<T[]> {
   const results: T[] = [];
-  let index = 0;
+  const executing = new Set<Promise<void>>();
 
-  async function worker() {
-    while (index < tasks.length) {
-      const current = index++;
-      try {
-        const res = await tasks[current]();
-        results[current] = res;
-      } catch {
-        results[current] = null as any;
-      }
+  for (const factory of factories) {
+    const promise = factory().then((res) => {
+      results.push(res);
+      executing.delete(promise);
+    });
+    executing.add(promise);
+
+    if (executing.size >= limit) {
+      await Promise.race(executing);
     }
   }
 
-  const workers = Array.from({ length: limit }, () => worker());
-
-  await Promise.all(workers);
-
+  await Promise.all(executing);
   return results;
 }

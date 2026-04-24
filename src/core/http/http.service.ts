@@ -1,78 +1,62 @@
 import { Injectable } from '@nestjs/common';
-import axios, { AxiosRequestConfig, AxiosResponse } from 'axios';
-
-interface HttpOptions {
-  followRedirect?: boolean;
-  timeout?: number;
-  headers?: Record<string, string>;
-}
+import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios';
+import { USER_AGENTS } from './user-agents.data';
 
 @Injectable()
 export class HttpService {
-  async get(url: string, options?: HttpOptions) {
-    const config: AxiosRequestConfig = {
-      url,
-      method: 'GET',
-      timeout: options?.timeout ?? 10000,
-      maxRedirects: options?.followRedirect === false ? 0 : 5,
-      headers: {
-        'User-Agent': 'SentinelCLI/1.0',
-        ...(options?.headers || {}),
-      },
-      validateStatus: () => true,
-    };
+  private readonly axiosInstance: AxiosInstance;
+  private readonly MAX_RETRIES = 3;
+  private readonly INITIAL_DELAY = 1000;
 
-    return this.request(config);
+  constructor() {
+    this.axiosInstance = axios.create({
+      timeout: 10000,
+      validateStatus: (status) => status < 500,
+    });
   }
 
-  async post(url: string, body: any, options?: HttpOptions) {
-    const config: AxiosRequestConfig = {
-      url,
-      method: 'POST',
-      data: body,
-      timeout: options?.timeout ?? 10000,
-      maxRedirects: options?.followRedirect === false ? 0 : 5,
-      headers: {
-        'User-Agent': 'SentinelCLI/1.0',
-        'Content-Type': 'application/x-www-form-urlencoded',
-        ...(options?.headers || {}),
-      },
-      validateStatus: () => true,
-    };
-
-    return this.request(config);
+  private getRandomUserAgent(): string {
+    return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
   }
 
-  private async request(config: AxiosRequestConfig) {
-    for (let i = 0; i < 2; i++) {
-      try {
-        const res: AxiosResponse = await axios(config);
+  private async sleep(ms: number) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
 
-        return {
-          status: res.status,
-          headers: this.normalizeHeaders(res.headers),
-          data:
-            typeof res.data === 'string'
-              ? res.data
-              : JSON.stringify(res.data),
-        };
-      } catch {
-        if (i === 1) return null;
-        await new Promise(r => setTimeout(r, 300));
+  private async request(config: AxiosRequestConfig, retries = 0): Promise<AxiosResponse | null> {
+    try {
+      const headers = {
+        ...config.headers,
+        'User-Agent': this.getRandomUserAgent(),
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+      };
+
+      const response = await this.axiosInstance.request({ ...config, headers });
+
+      if (response.status === 429 && retries < this.MAX_RETRIES) {
+        const delay = this.INITIAL_DELAY * Math.pow(2, retries);
+        console.warn(`[HTTP] Rate Limited (429). Tentando novamente em ${delay}ms...`);
+        await this.sleep(delay);
+        return this.request(config, retries + 1);
       }
+
+      return response;
+    } catch (error) {
+      if (retries < this.MAX_RETRIES) {
+        const delay = this.INITIAL_DELAY * Math.pow(2, retries);
+        await this.sleep(delay);
+        return this.request(config, retries + 1);
+      }
+      return null;
     }
   }
 
-  private normalizeHeaders(headers: any): Record<string, string> {
-    const result: Record<string, string> = {};
+  async get(url: string, params?: any) {
+    return this.request({ method: 'GET', url, params });
+  }
 
-    Object.keys(headers || {}).forEach(k => {
-      const v = headers[k];
-      result[k.toLowerCase()] = Array.isArray(v)
-        ? v.join('; ')
-        : String(v);
-    });
-
-    return result;
+  async post(url: string, data?: any) {
+    return this.request({ method: 'POST', url, data });
   }
 }

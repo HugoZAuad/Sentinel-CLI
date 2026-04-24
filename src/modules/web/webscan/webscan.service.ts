@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { HttpService } from '../../../core/http/http.service';
+import { promisePool } from '../../../shared/utils/concurrency.util';
 import { SecurityScoreService } from '../../score/security-score.service';
 import { VulnEngine } from '../../vuln/vuln.engine';
 import { CrawlerService } from '../crawler/crawler.service';
@@ -9,6 +10,8 @@ import { WebScanResult } from './webscan.types';
 
 @Injectable()
 export class WebscanService {
+  private readonly CONCURRENCY_LIMIT = 3;
+
   constructor(
     private readonly http: HttpService,
     private readonly crawler: CrawlerService,
@@ -23,26 +26,34 @@ export class WebscanService {
 
     try {
       const response = await this.http.get(url);
-
       if (!response || !response.data) {
         return { error: 'Falha ao acessar alvo' };
       }
 
       const headers = this.normalizeHeaders(response.headers);
       const body = response.data;
-
       const security = this.analyzeSecurity(headers);
       const tech = this.detectTech(headers, body);
 
       const links = await this.crawler.crawl(url, 1);
       const endpoints = await this.endpoint.discover(url);
-      const forms = await this.form.scan(url);
+      
+      const allTargets = [...new Set([url, ...links, ...endpoints])].slice(0, 50);
 
-      const targets = this.prioritize([
-        ...new Set([url, ...links, ...endpoints]),
-      ]);
+      const vulnTasks = allTargets.map((target) => async () => {
+        const params = this.extractParams(target);
+        return params.length > 0 ? await this.vuln.run(target, params) : [];
+      });
 
-      const vulnerabilities = await this.runVuln(targets);
+      const vulnResults = await promisePool(vulnTasks, this.CONCURRENCY_LIMIT);
+      const vulnerabilities = vulnResults.flat();
+
+      const formTasks = [url, ...links].map((target) => async () => {
+        return await this.form.scan(target);
+      });
+
+      const formResults = await promisePool(formTasks, this.CONCURRENCY_LIMIT);
+      const forms = formResults.flat();
 
       const score = this.score.calculate(vulnerabilities);
 
@@ -60,46 +71,29 @@ export class WebscanService {
         vulnerabilities,
         score,
         meta: {
-          scannedUrls: targets.length,
+          scannedUrls: allTargets.length,
           duration: Date.now() - start,
         },
       };
     } catch {
-      return { error: 'Erro no scan' };
+      return { error: 'Erro inesperado no processo de scan' };
     }
-  }
-
-  private prioritize(urls: string[]): string[] {
-    return urls
-      .filter(u => u.includes('?'))
-      .concat(urls)
-      .slice(0, 20);
-  }
-
-  private async runVuln(targets: string[]): Promise<any[]> {
-    const results: any[] = [];
-
-    for (const target of targets) {
-      const params = this.extractParams(target);
-      if (params.length === 0) continue;
-
-      const vulns = await this.vuln.run(target, params);
-      results.push(...vulns);
-    }
-
-    return results;
   }
 
   private extractParams(url: string): string[] {
-    const query = url.split('?')[1];
-    if (!query) return [];
-    return query.split('&').map(p => p.split('=')[0]);
+    try {
+      const query = url.split('?')[1];
+      if (!query) return [];
+      return query.split('&').map(p => p.split('=')[0]);
+    } catch {
+      return [];
+    }
   }
 
   private normalizeHeaders(headers: any): Record<string, string> {
     const result: Record<string, string> = {};
     Object.keys(headers || {}).forEach(k => {
-      result[k.toLowerCase()] = headers[k];
+      result[k.toLowerCase()] = String(headers[k]);
     });
     return result;
   }
@@ -115,13 +109,10 @@ export class WebscanService {
 
   private detectTech(headers: Record<string, string>, body: string): string[] {
     const tech: string[] = [];
-
     if (headers['server']) tech.push(headers['server']);
     if (headers['x-powered-by']) tech.push(headers['x-powered-by']);
-
     if (body.includes('wp-content')) tech.push('WordPress');
     if (body.includes('laravel')) tech.push('Laravel');
-
     return tech;
   }
 }
