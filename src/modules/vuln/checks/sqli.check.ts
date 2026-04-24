@@ -1,56 +1,86 @@
+import { Injectable } from '@nestjs/common';
 import { HttpService } from '../../../core/http/http.service';
+import { IVulnCheck, VulnFinding } from '../vuln-check.interface';
 
-export class SqliCheck {
+@Injectable()
+export class SqliCheck implements IVulnCheck {
+  readonly name = 'SQL Injection';
+
   constructor(private readonly http: HttpService) {}
 
-  async run(url: string, param: string, payloads: string[]) {
-    const base = await this.http.get(url);
-    if (!base || !base.data) return null;
+  async run(
+    url: string, 
+    param: string, 
+    method: string, 
+    baseline: number
+  ): Promise<VulnFinding[]> {
+    const findings: VulnFinding[] = [];
+    
+    const payloads = ["'", "''", '"', ' OR 1=1--', ' OR 1=1#', '\\'];
 
     for (const payload of payloads) {
       const target = this.inject(url, param, payload);
+      
+      try {
+        const res = await (method === 'POST' 
+          ? this.http.post(url, { [param]: payload }) 
+          : this.http.get(target));
 
-      const res = await this.http.get(target);
-      if (!res || !res.data) continue;
+        if (!res || !res.data) continue;
 
-      const body = res.data.toLowerCase();
+        const body = res.data.toLowerCase();
+        
+        const hasSqlError = 
+          body.includes('sql syntax') || 
+          body.includes('mysql_fetch') || 
+          body.includes('native client') || 
+          body.includes('ora-00933') || 
+          body.includes('sqlite3::ioerror');
 
-      const errorBased =
-        body.includes('sql') ||
-        body.includes('syntax') ||
-        body.includes('mysql') ||
-        body.includes('warning');
+        if (hasSqlError) {
+          findings.push({
+            type: 'SQL Injection (Error Based)',
+            severity: 'CRITICAL',
+            confidence: 'HIGH',
+            evidence: 'Mensagem de erro de banco de dados detectada na resposta.',
+            payload: payload,
+            target: url,
+            param: param
+          });
+          break; 
+        }
 
-      const diff =
-        Math.abs(base.data.length - res.data.length) > 20;
+        const currentLength = res.data.length;
+        const diff = Math.abs(baseline - currentLength);
 
-      if (errorBased) {
-        return {
-          type: 'SQLi',
-          url: target,
-          param,
-          payload,
-          confidence: 'high',
-        };
-      }
+        if (diff > 100) {
+          findings.push({
+            type: 'SQL Injection (Potential)',
+            severity: 'HIGH',
+            confidence: 'MEDIUM',
+            evidence: `Diferença significativa no tamanho da resposta (${diff} bytes).`,
+            payload: payload,
+            target: url,
+            param: param
+          });
+          break;
+        }
 
-      if (diff) {
-        return {
-          type: 'SQLi',
-          url: target,
-          param,
-          payload,
-          confidence: 'medium',
-        };
+      } catch (err) {
+        continue;
       }
     }
 
-    return null;
+    return findings;
   }
 
   private inject(url: string, param: string, payload: string): string {
-    const parsed = new URL(url);
-    parsed.searchParams.set(param, payload);
-    return parsed.toString();
+    try {
+      const parsed = new URL(url);
+      parsed.searchParams.set(param, payload);
+      return parsed.toString();
+    } catch {
+      return url;
+    }
   }
 }
