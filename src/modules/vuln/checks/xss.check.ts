@@ -29,7 +29,7 @@ export class XssCheck implements IVulnCheck {
         findings.push({
           type: 'Cross-Site Scripting (XSS)',
           severity: 'HIGH',
-          confidence: 'HIGH',
+          confidence: 'high',
           evidence: `Payload refletido no corpo da resposta (Reflected XSS)`,
           payload: finalPayload,
           target: url,

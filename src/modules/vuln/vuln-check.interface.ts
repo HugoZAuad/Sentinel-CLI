@@ -1,7 +1,7 @@
 export interface VulnFinding {
   type: string;
   severity: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
-  confidence: 'LOW' | 'MEDIUM' | 'HIGH';
+  confidence: 'low' | 'medium' | 'high';
   evidence: string;
   payload: string;
   target: string;

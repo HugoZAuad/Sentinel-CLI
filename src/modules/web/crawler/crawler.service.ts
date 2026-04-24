@@ -1,5 +1,5 @@
 import { Injectable } from "@nestjs/common";
-import type { HttpService } from "src/core/http/http.service";
+import { HttpService } from "src/core/http/http.service";
 
 @Injectable()
 export class CrawlerService {

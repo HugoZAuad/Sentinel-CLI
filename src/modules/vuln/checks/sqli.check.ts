@@ -41,7 +41,7 @@ export class SqliCheck implements IVulnCheck {
           findings.push({
             type: 'SQL Injection (Error Based)',
             severity: 'CRITICAL',
-            confidence: 'HIGH',
+            confidence: 'high',
             evidence: 'Mensagem de erro de banco de dados detectada na resposta.',
             payload: payload,
             target: url,
@@ -57,7 +57,7 @@ export class SqliCheck implements IVulnCheck {
           findings.push({
             type: 'SQL Injection (Potential)',
             severity: 'HIGH',
-            confidence: 'MEDIUM',
+            confidence: 'medium',
             evidence: `Diferença significativa no tamanho da resposta (${diff} bytes).`,
             payload: payload,
             target: url,
