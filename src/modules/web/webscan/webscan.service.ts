@@ -1,118 +1,88 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { HttpService } from '../../../core/http/http.service';
-import { promisePool } from '../../../shared/utils/concurrency.util';
+import { ReportService } from '../../../infrastructure/report/report.service';
 import { SecurityScoreService } from '../../score/security-score.service';
+import { VulnFinding } from '../../vuln/vuln-check.interface';
 import { VulnEngine } from '../../vuln/vuln.engine';
 import { CrawlerService } from '../crawler/crawler.service';
-import { EndpointService } from '../endpoint/endpoint.service';
-import { FormScannerService } from '../formscanner/form-scanner.service';
+import { FingerprintService } from '../fingerprint/fingerprint.service';
 import { WebScanResult } from './webscan.types';
 
 @Injectable()
 export class WebscanService {
-  private readonly CONCURRENCY_LIMIT = 3;
+  private readonly logger = new Logger(WebscanService.name);
+  private readonly MAX_URLS = 50;
 
   constructor(
-    private readonly http: HttpService,
     private readonly crawler: CrawlerService,
-    private readonly endpoint: EndpointService,
-    private readonly form: FormScannerService,
-    private readonly vuln: VulnEngine,
-    private readonly score: SecurityScoreService,
+    private readonly fingerprint: FingerprintService,
+    private readonly vulnEngine: VulnEngine,
+    private readonly scoreService: SecurityScoreService,
+    private readonly report: ReportService,
+    private readonly http: HttpService,
   ) {}
 
-  async scan(url: string): Promise<WebScanResult | { error: string }> {
-    const start = Date.now();
+  async scan(url: string): Promise<WebScanResult> {
+    const startTime = Date.now();
 
     try {
-      const response = await this.http.get(url);
-      if (!response || !response.data) {
-        return { error: 'Falha ao acessar alvo' };
+      const initialRes = await this.http.get(url);
+      if (!initialRes || !initialRes.data) throw new Error('Alvo inacessível.');
+
+      const headers = this.normalizeHeaders(initialRes.headers);
+      const profiles = this.fingerprint.analyze(headers, String(initialRes.data));
+      
+      const links = await this.crawler.crawl(url, 1);
+      const targetUrls: string[] = [...new Set([url, ...links])].slice(0, this.MAX_URLS);
+
+      const vulnerabilities: VulnFinding[] = [];
+
+      for (const target of targetUrls) {
+        const findings = await this.vulnEngine.run(target, [], 'GET'); 
+        vulnerabilities.push(...findings);
       }
 
-      const headers = this.normalizeHeaders(response.headers);
-      const body = response.data;
-      const security = this.analyzeSecurity(headers);
-      const tech = this.detectTech(headers, body);
-
-      const links = await this.crawler.crawl(url, 1);
-      const endpoints = await this.endpoint.discover(url);
-      
-      const allTargets = [...new Set([url, ...links, ...endpoints])].slice(0, 50);
-
-      const vulnTasks = allTargets.map((target) => async () => {
-        const params = this.extractParams(target);
-        return params.length > 0 ? await this.vuln.run(target, params) : [];
-      });
-
-      const vulnResults = await promisePool(vulnTasks, this.CONCURRENCY_LIMIT);
-      const vulnerabilities = vulnResults.flat();
-
-      const formTasks = [url, ...links].map((target) => async () => {
-        return await this.form.scan(target);
-      });
-
-      const formResults = await promisePool(formTasks, this.CONCURRENCY_LIMIT);
-      const forms = formResults.flat();
-
-      const score = this.score.calculate(vulnerabilities);
+      const scoreData = this.scoreService.calculate(vulnerabilities);
+      const durationNum = (Date.now() - startTime) / 1000;
 
       return {
         url,
-        status: response.status,
-        time: `${Date.now() - start}ms`,
-        https: url.startsWith('https'),
-        headers,
-        tech,
-        security,
-        links,
-        endpoints,
-        forms,
+        status: 1, 
+        time: `${durationNum.toFixed(2)}s`,
+        links: targetUrls,
+        endpoints: targetUrls,
+        forms: [],
+        tech: profiles.map(p => p.name),
         vulnerabilities,
-        score,
-        meta: {
-          scannedUrls: allTargets.length,
-          duration: Date.now() - start,
+        score: { value: Number(scoreData.value) },
+        https: url.startsWith('https'),
+        headers: headers,
+        
+        security: {
+          hsts: !!headers['strict-transport-security'],
+          xss: !!headers['x-xss-protection'],
+          contentType: !!headers['x-content-type-options'],
+          frame: !!headers['x-frame-options']
         },
-      };
-    } catch {
-      return { error: 'Erro inesperado no processo de scan' };
-    }
-  }
 
-  private extractParams(url: string): string[] {
-    try {
-      const query = url.split('?')[1];
-      if (!query) return [];
-      return query.split('&').map(p => p.split('=')[0]);
-    } catch {
-      return [];
+        meta: {
+          scannedUrls: targetUrls.length,
+          duration: durationNum
+        }
+      };
+
+    } catch (error: any) {
+      this.logger.error(`Scan falhou: ${error.message}`);
+      throw error;
     }
   }
 
   private normalizeHeaders(headers: any): Record<string, string> {
-    const result: Record<string, string> = {};
-    Object.keys(headers || {}).forEach(k => {
-      result[k.toLowerCase()] = String(headers[k]);
-    });
-    return result;
-  }
-
-  private analyzeSecurity(headers: Record<string, string>) {
-    return {
-      hsts: !!headers['strict-transport-security'],
-      xss: !!headers['x-xss-protection'],
-      contentType: !!headers['x-content-type-options'],
-      frame: !!headers['x-frame-options'],
-    };
-  }
-
-  private detectTech(headers: Record<string, string>, body: string): string[] {
-    const tech: string[] = [];
-    if (headers['server']) tech.push(headers['server']);
-    if (headers['x-powered-by']) tech.push(headers['x-powered-by']);
-    if (body.includes('wp-content')) tech.push('WordPress');
-    if (body.includes('laravel')) tech.push('Laravel');
-    return tech;
+    const normalized: Record<string, string> = {};
+    if (!headers) return normalized;
+    for (const key in headers) {
+      normalized[key.toLowerCase()] = String(headers[key]);
+    }
+    return normalized;
   }
 }
