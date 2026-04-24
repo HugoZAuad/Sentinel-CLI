@@ -1,88 +1,70 @@
-import { Injectable, Logger } from '@nestjs/common';
-import { HttpService } from '../../../../core/http/http.service';
+import { Injectable } from '@nestjs/common';
+import { DomXssService } from '../../../../core/browser/dom-xss.service';
+import { InteractionService } from '../../../../core/browser/interaction.service';
+import { FormatterService } from '../../../../core/formatter/formatter.service';
+import { LoggerService } from '../../../../infrastructure/logger/logger.service';
 import { ReportService } from '../../../../infrastructure/report/report.service';
-import { SecurityScoreService } from '../../../blue/score/security-score.service';
-import { FingerprintService } from '../../../blue/web/fingerprint/fingerprint.service';
-import { CrawlerService } from '../crawler/crawler.service';
-import { VulnFinding } from '../vuln/vuln-check.interface';
-import { VulnEngine } from '../vuln/vuln.engine';
-import { WebScanResult } from './webscan.types';
 
 @Injectable()
 export class WebscanService {
-  private readonly logger = new Logger(WebscanService.name);
-  private readonly MAX_URLS = 50;
-
   constructor(
-    private readonly crawler: CrawlerService,
-    private readonly fingerprint: FingerprintService,
-    private readonly vulnEngine: VulnEngine,
-    private readonly scoreService: SecurityScoreService,
+    private readonly logger: LoggerService,
     private readonly report: ReportService,
-    private readonly http: HttpService,
+    private readonly formatter: FormatterService,
+    private readonly interaction: InteractionService,
+    private readonly domXss: DomXssService,
   ) {}
 
-  async scan(url: string): Promise<WebScanResult> {
-    const startTime = Date.now();
-
+  async execute(targetUrl: string): Promise<void> {
+    this.logger.log(`Iniciando análise completa em: ${targetUrl}`);
+    
     try {
-      const initialRes = await this.http.get(url);
-      if (!initialRes || !initialRes.data) throw new Error('Alvo inacessível.');
+      this.logger.startTask('Explorando estrutura e interações da página...');
+      const urls = await this.interaction.explore(targetUrl);
+      this.logger.stopTask(`Descobertos ${urls.length} links/pontos de interação.`, 'success');
 
-      const headers = this.normalizeHeaders(initialRes.headers);
-      const profiles = this.fingerprint.analyze(headers, String(initialRes.data));
-      
-      const links = await this.crawler.crawl(url, 1);
-      const targetUrls: string[] = [...new Set([url, ...links])].slice(0, this.MAX_URLS);
+      this.logger.startTask('Executando scan ativo de DOM XSS...');
+      const allFindings: any[] = [];
 
-      const vulnerabilities: VulnFinding[] = [];
+      for (const url of urls) {
+        if (url.includes(new URL(targetUrl).hostname)) {
+          const findings = await this.domXss.scan(url);
+          allFindings.push(...findings);
+        }
+      }
+      this.logger.stopTask('Varredura de vulnerabilidades concluída.', 'success');
 
-      for (const target of targetUrls) {
-        const findings = await this.vulnEngine.run(target, [], 'GET'); 
-        vulnerabilities.push(...findings);
+      this.renderResults(allFindings);
+
+      if (allFindings.length > 0) {
+        const reportPath = this.report.save('webscan-results', {
+          target: targetUrl,
+          date: new Date(),
+          findings: allFindings,
+          urlsDiscovered: urls
+        });
+        this.logger.success(`Relatório detalhado gerado: ${reportPath}`);
+      } else {
+        this.logger.info('Nenhuma vulnerabilidade crítica encontrada nesta sessão.');
       }
 
-      const scoreData = this.scoreService.calculate(vulnerabilities);
-      const durationNum = (Date.now() - startTime) / 1000;
-
-      return {
-        url,
-        status: 1, 
-        time: `${durationNum.toFixed(2)}s`,
-        links: targetUrls,
-        endpoints: targetUrls,
-        forms: [],
-        tech: profiles.map(p => p.name),
-        vulnerabilities,
-        score: { value: Number(scoreData.value) },
-        https: url.startsWith('https'),
-        headers: headers,
-        
-        security: {
-          hsts: !!headers['strict-transport-security'],
-          xss: !!headers['x-xss-protection'],
-          contentType: !!headers['x-content-type-options'],
-          frame: !!headers['x-frame-options']
-        },
-
-        meta: {
-          scannedUrls: targetUrls.length,
-          duration: durationNum
-        }
-      };
-
-    } catch (error: any) {
-      this.logger.error(`Scan falhou: ${error.message}`);
-      throw error;
+    } catch (error) {
+      this.logger.error('Erro crítico durante o Webscan', error);
     }
   }
 
-  private normalizeHeaders(headers: any): Record<string, string> {
-    const normalized: Record<string, string> = {};
-    if (!headers) return normalized;
-    for (const key in headers) {
-      normalized[key.toLowerCase()] = String(headers[key]);
-    }
-    return normalized;
+  private renderResults(findings: any[]): void {
+    if (findings.length === 0) return;
+
+    const head = ['TIPO', 'URL ALVO', 'PAYLOAD / EVIDÊNCIA'];
+    const rows = findings.map(f => [
+      f.type,
+      this.formatter.truncate(f.url, 30),
+      this.formatter.truncate(f.payload || f.evidence, 40)
+    ]);
+
+    const table = this.formatter.formatTable(head, rows, 'red');
+    
+    console.log('\n' + table + '\n');
   }
 }

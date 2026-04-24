@@ -5,15 +5,15 @@ import { FingerprintModule } from './web/fingerprint/fingerprint.module';
 
 @Module({
   imports: [
-    
-    AuthModule,         
-    FingerprintModule,  
-    ScoreModule,        
-  ],
-  exports: [
     AuthModule,
     FingerprintModule,
     ScoreModule,
+  ],
+  providers: [],
+  exports: [
+    ScoreModule,
+    AuthModule,
+    FingerprintModule,
   ],
 })
 export class BlueModule {}
