@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import * as fs from 'fs';
 import * as path from 'path';
-import { WebScanResult } from '../../modules/web/webscan/webscan.types';
+import { WebScanResult } from '../../modules/red/web/webscan/webscan.types';
 
 @Injectable()
 export class ReportService {

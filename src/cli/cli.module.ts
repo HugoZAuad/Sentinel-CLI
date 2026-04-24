@@ -1,6 +1,6 @@
 import { Module } from '@nestjs/common';
-import { PortscanModule } from '../modules/network/portscan/portscan.module';
-import { WebscanModule } from '../modules/web/webscan/webscan.module';
+import { PortscanModule } from '../modules/red/network/portscan/portscan.module';
+import { WebscanModule } from '../modules/red/web/webscan/webscan.module';
 import { CliService } from './cli.service';
 
 @Module({
