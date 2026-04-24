@@ -1,12 +1,11 @@
 import { Injectable } from '@nestjs/common';
 import chalk from 'chalk';
-import cliProgress from 'cli-progress';
-import Table from 'cli-table3';
 import inquirer from 'inquirer';
+import { FormatterService } from '../core/formatter/formatter.service';
+import { LoggerService } from '../infrastructure/logger/logger.service';
 import { SecurityScoreService } from '../modules/blue/score/security-score.service';
 import { PortscanService } from '../modules/red/network/portscan/portscan.service';
 import { WebscanService } from '../modules/red/web/webscan/webscan.service';
-import { saveReport } from '../shared/utils/report.util';
 
 @Injectable()
 export class CliService {
@@ -16,6 +15,8 @@ export class CliService {
     private readonly portscanService: PortscanService,
     private readonly webscanService: WebscanService,
     private readonly scoreService: SecurityScoreService,
+    private readonly logger: LoggerService,
+    private readonly formatter: FormatterService,
   ) {}
 
   async start(): Promise<void> {
@@ -24,7 +25,7 @@ export class CliService {
       const { mode } = await this.prompt([{
         type: 'select',
         name: 'mode',
-        message: chalk.cyan('Selecione o modo de operação:'),
+        message: 'Selecione o modo de operação:',
         choices: [
           { name: chalk.red('🔴 Red Team (Ofensivo)'), value: 'red' },
           { name: chalk.blue('🔵 Blue Team (Defensivo)'), value: 'blue' },
@@ -33,8 +34,8 @@ export class CliService {
       }]);
 
       if (mode === 'exit') {
-        console.log(chalk.yellow('\n[!] Encerrando Sentinel.\n'));
-        return; 
+        this.logger.log('Encerrando Sentinel.');
+        process.exit(0);
       }
 
       mode === 'red' ? await this.handleRedTeam() : await this.handleBlueTeam();
@@ -51,14 +52,14 @@ export class CliService {
     ███████║███████╗██║ ╚████║   ██║   ██║██║ ╚████║███████╗███████╗
     ╚══════╝╚══════╝╚═╝  ╚═══╝   ╚═╝   ╚═╝╚═╝  ╚═══╝╚══════╝╚══════╝
     `));
-    console.log(chalk.gray('    --- Security Recon & Audit Platform | v1.0.0 ---\n'));
+    this.logger.info('--- Enterprise Security Framework | v1.2.0 ---\n');
   }
 
   private async handleRedTeam() {
     const { tool } = await this.prompt([{
       type: 'select',
       name: 'tool',
-      message: chalk.red('FERRAMENTAS RED TEAM:'),
+      message: chalk.red('MODO OFENSIVO:'),
       choices: [
         { name: '🔍 Port Scanner', value: 'port' },
         { name: '🌐 Web Scanner', value: 'web' },
@@ -66,61 +67,54 @@ export class CliService {
       ],
     }]);
 
-    if (tool === 'port') await this.runPortScanInteractive();
-    if (tool === 'web') await this.runWebScanInteractive();
+    if (tool === 'port') await this.runPortScan();
+    if (tool === 'web') await this.runWebScan();
   }
 
   private async handleBlueTeam() {
     const { tool } = await this.prompt([{
       type: 'select',
       name: 'tool',
-      message: chalk.blue('FERRAMENTAS BLUE TEAM:'),
+      message: chalk.blue('MODO DEFENSIVO:'),
       choices: [
         { name: '📊 Security Score', value: 'score' },
         { name: '⬅️ Voltar', value: 'back' },
       ],
     }]);
 
-    if (tool === 'score') console.log(chalk.yellow('\n[!] Módulo em integração.\n'));
+    if (tool === 'score') await this.runSecurityScore();
   }
 
-  private async runPortScanInteractive() {
-    const answers = await this.prompt([
-      { type: 'input', name: 'host', message: 'Host:' },
-      { type: 'input', name: 'start', message: 'Porta Inicial:', default: '1' },
-      { type: 'input', name: 'end', message: 'Porta Final:', default: '1024' },
+  private async runPortScan() {
+    const { host, range } = await this.prompt([
+      { type: 'input', name: 'host', message: 'Target Host:', default: '127.0.0.1' },
+      { type: 'input', name: 'range', message: 'Port Range (ex: 1-1024):', default: '1-1000' }
     ]);
 
-    const total = Number(answers.end) - Number(answers.start) + 1;
-    const bar = new cliProgress.SingleBar({
-      format: 'Progresso |' + chalk.red('{bar}') + '| {percentage}%',
-      barCompleteChar: '\u2588',
-      barIncompleteChar: '\u2591',
-    });
+    const [start, end] = range.split('-').map(Number);
+    this.logger.startTask(`Escaneando portas em ${host}...`);
+    const openPorts = await this.portscanService.scanRange(host, start, end);
+    this.logger.stopTask('Scan de rede finalizado.');
 
-    bar.start(total, 0);
-    let count = 0;
-    const openPorts = await this.portscanService.scanRange(answers.host, Number(answers.start), Number(answers.end), () => {
-      count++;
-      bar.update(count);
-    });
-    bar.stop();
-
-    const table = new Table({ head: [chalk.red('PORTA'), chalk.red('SERVIÇO')] });
-    openPorts.forEach(item => table.push([item.port, item.service]));
-    console.log(table.toString());
-    saveReport(`portscan-${answers.host}`, openPorts);
+    const head = ['PORTA', 'STATUS', 'SERVIÇO'];
+    const rows = openPorts.map(p => [p.port, chalk.green('OPEN'), p.service]);
+    console.log(this.formatter.formatTable(head, rows, 'red'));
   }
 
-  private async runWebScanInteractive() {
-    const { url } = await this.prompt([{ type: 'input', name: 'url', message: 'URL Alvo:' }]);
-    try {
-      const result = await this.webscanService.scan(url);
-      console.log(chalk.green(`\n✔ Scan completo: ${result.url}`));
-      saveReport(`webscan-${url.replace(/[^a-z0-9]/gi, '_')}`, result);
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'Erro desconhecido';
-      console.log(chalk.red(`\n[X] Erro: ${message}`));
-    }
+  private async runWebScan() {
+    const { url } = await this.prompt([{ type: 'input', name: 'url', message: 'Target URL:' }]);
+    await this.webscanService.execute(url);
+  }
+
+  private async runSecurityScore() {
+    this.logger.startTask('Calculando Score de Segurança...');
+    const result = await this.scoreService.calculateGlobalScore(); 
+    this.logger.stopTask('Auditoria concluída.');
+
+    this.logger.success(`Score Final: ${result.score}/100`);
+    
+    const head = ['ASPECTO', 'STATUS'];
+    const rows = result.details.map(d => [d.aspect, d.status]);
+    console.log(this.formatter.formatTable(head, rows, 'blue'));
   }
 }

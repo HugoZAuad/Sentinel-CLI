@@ -1,38 +1,51 @@
 import { Injectable } from '@nestjs/common';
+import { LoggerService } from '../../infrastructure/logger/logger.service';
 import { BrowserService } from './browser.service';
 
 @Injectable()
 export class InteractionService {
-  constructor(private readonly browser: BrowserService) {}
+  constructor(
+    private readonly browser: BrowserService,
+    private readonly logger: LoggerService,
+  ) {}
 
   async explore(url: string): Promise<string[]> {
-    const browser = await this.browser.getBrowser();
-    const page = await browser.newPage();
+    const page = await this.browser.newPage();
+    const discovered = new Set<string>();
 
-    const discovered: string[] = [];
+    try {
+      this.logger.info(`Explorando interações em: ${url}`);
+      
+      await page.goto(url, {
+        waitUntil: 'networkidle2',
+        timeout: 15000,
+      });
 
-    await page.goto(url, {
-      waitUntil: 'networkidle2',
-      timeout: 15000,
-    });
+      const links = await page.$$eval('a', as =>
+        as.map(a => (a as HTMLAnchorElement).href).filter(href => href.startsWith('http'))
+      );
 
-    const links = await page.$$eval('a', as =>
-      as.map(a => (a as HTMLAnchorElement).href)
-    );
+      links.forEach(link => discovered.add(link));
 
-    discovered.push(...links);
+      const buttons = await page.$$('button');
+      this.logger.info(`Encontrados ${buttons.length} botões. Interagindo com os principais...`);
 
-    const buttons = await page.$$('button');
+      for (const btn of buttons.slice(0, 5)) {
+        try {
+          await btn.click();
+          await new Promise(r => setTimeout(r, 800));
 
-    for (const btn of buttons.slice(0, 5)) {
-      try {
-        await btn.click();
-        await new Promise(r => setTimeout(r, 1000));
-      } catch {}
+          const newLinks = await page.$$eval('a', as => as.map(a => (a as HTMLAnchorElement).href));
+          newLinks.forEach(link => discovered.add(link));
+        } catch {
+        }
+      }
+    } catch (err) {
+      this.logger.error(`Falha ao explorar interações: ${url}`);
+    } finally {
+      await page.close();
     }
 
-    await page.close();
-
-    return [...new Set(discovered)];
+    return Array.from(discovered);
   }
 }

@@ -1,11 +1,11 @@
 import { Module } from '@nestjs/common';
+import { BrowserModule } from '../../../../core/browser/browser.module';
 import { HttpModule } from '../../../../core/http/http.module';
 import { FingerprintModule } from '../../../blue/web/fingerprint/fingerprint.module';
 import { CrawlerService } from './crawler.service';
-import { InteractionModule } from './interaction/interaction.module';
 
 @Module({
-  imports: [HttpModule, FingerprintModule, InteractionModule],
+  imports: [HttpModule, FingerprintModule, BrowserModule],
   providers: [CrawlerService],
   exports: [CrawlerService],
 })
