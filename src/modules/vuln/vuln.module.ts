@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { HttpModule } from '../../core/http/http.module';
 import { DomXssCheck } from './checks/domxss.check';
+import { LfiCheck } from './checks/lfi.check';
 import { PassiveCheck } from './checks/passive.check';
 import { RedirectCheck } from './checks/redirect.check';
 import { SensitiveFileCheck } from './checks/sensitive-file.check';
@@ -16,7 +17,7 @@ import { VulnEngine } from './vuln.engine';
     VulnEngine,
     PayloadMutator,
     VulnEngine, 
-    XssCheck, SqliCheck, SstiCheck,
+    XssCheck, SqliCheck, SstiCheck, LfiCheck,
     PassiveCheck, SensitiveFileCheck, RedirectCheck, DomXssCheck
   ],
   exports: [
