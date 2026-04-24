@@ -1,32 +1,43 @@
+import { Injectable } from '@nestjs/common';
 import { HttpService } from '../../../core/http/http.service';
+import { PayloadMutator } from '../payload/payload.mutator';
+import { IVulnCheck, VulnFinding } from '../vuln-check.interface';
 
-export class XssCheck {
-  constructor(private readonly http: HttpService) {}
+@Injectable()
+export class XssCheck implements IVulnCheck {
+  readonly name = 'XSS';
 
-  async run(url: string, param: string, payloads: string[]) {
+  constructor(
+    private readonly http: HttpService,
+    private readonly mutator: PayloadMutator
+  ) {}
+
+  async run(url: string, param: string, method: string, baseline: number): Promise<VulnFinding[]> {
+    const findings: VulnFinding[] = [];
+    const payloads = this.mutator.generate('xss');
+
     for (const payload of payloads) {
-      const target = this.inject(url, param, payload);
+      const marker = `xss_${Date.now()}`;
+      const finalPayload = payload.replace('alert(1)', marker);
+      
+      const data = { [param]: finalPayload };
+      const res = await (method === 'POST' 
+        ? this.http.post(url, data) 
+        : this.http.get(`${url}?${new URLSearchParams(data).toString()}`));
 
-      const res = await this.http.get(target);
-      if (!res || !res.data) continue;
-
-      if (res.data.includes(payload)) {
-        return {
-          type: 'XSS',
-          url: target,
-          param,
-          payload,
-          confidence: 'medium',
-        };
+      if (res?.data?.includes(marker)) {
+        findings.push({
+          type: 'Cross-Site Scripting (XSS)',
+          severity: 'HIGH',
+          confidence: 'HIGH',
+          evidence: `Payload refletido no corpo da resposta (Reflected XSS)`,
+          payload: finalPayload,
+          target: url,
+          param
+        });
+        break;
       }
     }
-
-    return null;
-  }
-
-  private inject(url: string, param: string, payload: string): string {
-    const parsed = new URL(url);
-    parsed.searchParams.set(param, payload);
-    return parsed.toString();
+    return findings;
   }
 }
