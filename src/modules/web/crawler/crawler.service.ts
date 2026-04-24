@@ -1,58 +1,64 @@
-import { Injectable } from "@nestjs/common";
-import { HttpService } from "src/core/http/http.service";
+import { Injectable } from '@nestjs/common';
+import * as puppeteer from 'puppeteer';
+import { HttpService } from '../../../core/http/http.service';
+import { InteractionEngine } from './interaction/interaction.engine';
 
 @Injectable()
 export class CrawlerService {
-  constructor(private readonly http: HttpService) {}
+  constructor(
+    private readonly http: HttpService,
+    private readonly interaction: InteractionEngine
+  ) {}
 
-  async crawl(url: string, depth = 1): Promise<string[]> {
-    const targetUrl = new URL(url);
-    const visited = new Set<string>();
-    const results = new Set<string>();
-
-    await this.walk(url, depth, visited, results, targetUrl.hostname);
-
-    return Array.from(results);
+  async crawl(baseUrl: string, depth: number = 1): Promise<string[]> {
+    const staticLinks = await this.fastCrawl(baseUrl);
+    const dynamicLinks = await this.deepCrawl(baseUrl);
+    return [...new Set([...staticLinks, ...dynamicLinks])];
   }
 
-  private async walk(url: string, depth: number, visited: Set<string>, results: Set<string>, allowedHost: string) {
-    if (depth === 0 || visited.has(url)) return;
-
+  private async deepCrawl(url: string): Promise<string[]> {
+    const browser = await puppeteer.launch({ headless: true });
     try {
-      const currentUrl = new URL(url);
-      if (currentUrl.hostname !== allowedHost) return;
-    } catch { return; }
+      const page = await browser.newPage();
+      await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+      
+      const extraLinks = await this.interaction.simulate(page);
+      
+      const jsLinks = await page.evaluate(() => 
+        Array.from(document.querySelectorAll('a'))
+          .map(a => a.href)
+          .filter(href => href.startsWith('http'))
+      );
 
-    visited.add(url);
-    const res = await this.http.get(url);
-    if (!res || !res.data) return;
+      return [...extraLinks, ...jsLinks];
+    } catch {
+      return [];
+    } finally {
+      await browser.close();
+    }
+  }
 
-    const links = this.extractLinks(res.data, url);
+  private async fastCrawl(url: string): Promise<string[]> {
+    try {
+      const res = await this.http.get(url);
+      if (!res?.data) return [];
+      
+      const html = String(res.data);
+      const regex = /href="([^"|#]+)"/g;
+      const links: string[] = [];
+      let match;
 
-    for (const link of links) {
-      if (this.isValid(link)) {
-        results.add(link);
-        await this.walk(link, depth - 1, visited, results, allowedHost);
+      while ((match = regex.exec(html)) !== null) {
+        if (match[1].startsWith('http')) {
+          links.push(match[1]);
+        } else if (match[1].startsWith('/')) {
+          const origin = new URL(url).origin;
+          links.push(`${origin}${match[1]}`);
+        }
       }
+      return links;
+    } catch {
+      return [];
     }
-  }
-
-  private extractLinks(html: string, base: string): string[] {
-    const links: string[] = [];
-    const regex = /href=["'](.*?)["']/gi;
-    let match;
-
-    while ((match = regex.exec(html))) {
-      try {
-        const raw = match[1].trim();
-        if (!raw || raw.startsWith('#') || raw.startsWith('javascript:')) continue;
-        links.push(new URL(raw, base).toString());
-      } catch {}
-    }
-    return links;
-  }
-
-  private isValid(url: string): boolean {
-    return !url.match(/\.(jpg|jpeg|png|gif|css|svg|js|ico|woff|ttf|map)$/i);
   }
 }
