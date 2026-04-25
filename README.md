@@ -30,7 +30,7 @@ Esta ferramenta foi criada apenas para fins educacionais e testes de segurança 
   - [📦 Instalação e Uso](#-instalação-e-uso)
     - [Pré-requisitos](#pré-requisitos)
     - [Passo a Passo](#passo-a-passo)
-  - [�️ Desenvolvimento](#️-desenvolvimento)
+  - [🛠️ Desenvolvimento](#️-desenvolvimento)
   - [👨‍💻 Autor](#-autor)
 
 ---
@@ -69,13 +69,13 @@ Estrutura do projeto:
 
 ```text
 src/
-├── cli/                     # Orquestração da interface de linha de comando
-├── core/                  # Serviços base e motores (Browser, Formatter, Http)
-├── infrastructure/   # Implementações técnicas (Logger, Report PDF)
-├── modules/           # Regras de negócio divididas por domínio
-│   ├── red/             # Ferramentas ofensivas (Portscan, Webscan)
-│   └── blue/           # Ferramentas defensivas (Score, Auth, Fingerprint)
-└── main.ts             # Ponto de entrada da aplicação
+├── cli/            # Orquestração da interface de linha de comando
+├── core/           # Serviços base e motores (Browser, Formatter, Http)
+├── infrastructure/ # Implementações técnicas (Logger, Report PDF)
+├── modules/        # Regras de negócio divididas por domínio
+│   ├── red/        # Ferramentas ofensivas (Portscan, Webscan)
+│   └── blue/       # Ferramentas defensivas (Score, Auth, Fingerprint)
+└── main.ts         # Ponto de entrada da aplicação
 
 ```
 
