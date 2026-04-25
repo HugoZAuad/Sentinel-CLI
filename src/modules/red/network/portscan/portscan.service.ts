@@ -6,66 +6,78 @@ export class PortscanService {
   private commonPorts: Record<number, string> = {
     21: 'FTP',
     22: 'SSH',
+    23: 'Telnet',
+    25: 'SMTP',
+    53: 'DNS',
     80: 'HTTP',
+    110: 'POP3',
+    143: 'IMAP',
     443: 'HTTPS',
+    445: 'SMB',
     3306: 'MySQL',
+    5432: 'PostgreSQL',
+    8080: 'HTTP-Proxy',
+    27017: 'MongoDB',
   };
 
-  getService(port: number): string {
-    return this.commonPorts[port] || 'Unknown';
-  }
-
-  grabBanner(host: string, port: number, timeout = 1000): Promise<string> {
+  /**
+   * Tenta conectar e capturar o banner em um único fluxo de socket
+   */
+  private async probePort(
+    host: string,
+    port: number,
+    timeout = 1500,
+  ): Promise<any | null> {
     return new Promise((resolve) => {
       const socket = new net.Socket();
       let banner = '';
+      let isResolved = false;
 
       socket.setTimeout(timeout);
 
       socket.connect(port, host, () => {
-        socket.write('\r\n');
+        if ([80, 443, 8080].includes(port)) {
+          socket.write('HEAD / HTTP/1.1\r\nHost: ' + host + '\r\n\r\n');
+        } else {
+          socket.write('\r\n');
+        }
       });
 
       socket.on('data', (data) => {
-        banner += data.toString();
+        banner += data
+          .toString()
+          .replace(/[\r\n\t]/g, ' ')
+          .trim();
+        socket.destroy();
       });
 
       socket.on('timeout', () => {
-        socket.destroy();
-        resolve(banner.trim() || 'No banner');
+        if (!isResolved) {
+          socket.destroy();
+
+          resolve(banner ? { port, banner } : null);
+          isResolved = true;
+        }
       });
 
       socket.on('error', () => {
-        resolve('No banner');
+        if (!isResolved) {
+          resolve(null);
+          isResolved = true;
+        }
       });
 
       socket.on('close', () => {
-        resolve(banner.trim() || 'No banner');
+        if (!isResolved) {
+          const service = this.commonPorts[port] || 'Unknown';
+          resolve(
+            banner
+              ? { port, service, banner: banner.substring(0, 64) }
+              : { port, service, banner: 'No banner' },
+          );
+          isResolved = true;
+        }
       });
-    });
-  }
-
-  scanPort(host: string, port: number, timeout = 1000): Promise<boolean> {
-    return new Promise((resolve) => {
-      const socket = new net.Socket();
-
-      socket.setTimeout(timeout);
-
-      socket.once('connect', () => {
-        socket.destroy();
-        resolve(true);
-      });
-
-      socket.once('timeout', () => {
-        socket.destroy();
-        resolve(false);
-      });
-
-      socket.once('error', () => {
-        resolve(false);
-      });
-
-      socket.connect(port, host);
     });
   }
 
@@ -74,43 +86,28 @@ export class PortscanService {
     startPort: number,
     endPort: number,
     onProgress?: () => void,
-    onOpenPort?: (data: any) => void,
-  ) {
+  ): Promise<any[]> {
     const results: any[] = [];
+    const concurrency = 64;
 
-    const ports: number[] = [];
-    for (let port = startPort; port <= endPort; port++) {
-      ports.push(port);
-    }
+    for (let port = startPort; port <= endPort; port += concurrency) {
+      const limit = Math.min(port + concurrency, endPort + 1);
 
-    const concurrency = 100;
+      // CORREÇÃO: Definimos explicitamente que o array aceita Promessas
+      const batch: Promise<any>[] = [];
 
-    for (let i = 0; i < ports.length; i += concurrency) {
-      const chunk = ports.slice(i, i + concurrency);
+      for (let p = port; p < limit; p++) {
+        batch.push(
+          (async (pNum) => {
+            const result = await this.probePort(host, pNum);
+            if (onProgress) onProgress();
+            return result;
+          })(p),
+        );
+      }
 
-      const promises = chunk.map(async (port) => {
-        const isOpen = await this.scanPort(host, port);
-
-        if (onProgress) onProgress();
-
-        if (isOpen) {
-          const service = this.getService(port);
-          const banner = await this.grabBanner(host, port);
-
-          const result = { port, service, banner };
-
-          if (onOpenPort) {
-            onOpenPort(result);
-          }
-
-          return result;
-        }
-
-        return null;
-      });
-
-      const resultsChunk = await Promise.all(promises);
-      results.push(...resultsChunk.filter(Boolean));
+      const batchResults = await Promise.all(batch);
+      results.push(...batchResults.filter(Boolean));
     }
 
     return results;
