@@ -1,13 +1,10 @@
 import { Module } from '@nestjs/common';
-import { PortscanModule } from '../modules/red/network/portscan/portscan.module';
-import { WebscanModule } from '../modules/red/web/webscan/webscan.module';
+import { RedModule } from '../modules/red/red.module';
+import { BlueModule } from '../modules/blue/blue.module';
 import { CliService } from './cli.service';
 
 @Module({
-  imports: [
-    PortscanModule,
-    WebscanModule,
-  ],
+  imports: [RedModule, BlueModule],
   providers: [CliService],
   exports: [CliService],
 })

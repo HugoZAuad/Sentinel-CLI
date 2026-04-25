@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { BrowserModule } from '../../../../core/browser/browser.module';
 import { HttpModule } from '../../../../core/http/http.module';
 import { DomXssCheck } from './checks/domxss.check';
 import { LfiCheck } from './checks/lfi.check';
@@ -12,7 +13,7 @@ import { PayloadMutator } from './payload/payload.mutator';
 import { VulnEngine } from './vuln.engine';
 
 @Module({
-  imports: [HttpModule],
+  imports: [HttpModule, BrowserModule],
   providers: [
     VulnEngine,
     PayloadMutator,
