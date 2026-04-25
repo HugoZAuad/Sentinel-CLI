@@ -26,10 +26,11 @@ Esta ferramenta foi criada apenas para fins educacionais e testes de segurança 
     - [🔴 Red Team (Módulo Ofensivo)](#-red-team-módulo-ofensivo)
     - [🔵 Blue Team (Módulo Defensivo)](#-blue-team-módulo-defensivo)
   - [🛠️ Arquitetura Técnica](#️-arquitetura-técnica)
+  - [⚙️ CI/CD \& Qualidade de Software](#️-cicd--qualidade-de-software)
   - [📦 Instalação e Uso](#-instalação-e-uso)
     - [Pré-requisitos](#pré-requisitos)
     - [Passo a Passo](#passo-a-passo)
-  - [📖 Como Usar](#-como-usar)
+  - [�️ Desenvolvimento](#️-desenvolvimento)
   - [👨‍💻 Autor](#-autor)
 
 ---
@@ -75,7 +76,16 @@ src/
 │   ├── red/             # Ferramentas ofensivas (Portscan, Webscan)
 │   └── blue/           # Ferramentas defensivas (Score, Auth, Fingerprint)
 └── main.ts             # Ponto de entrada da aplicação
+
 ```
+
+## ⚙️ CI/CD & Qualidade de Software
+
+O Sentinel CLI utiliza **GitHub Actions** para garantir a integridade do código e a segurança na entrega.
+
+* **Continuous Integration (CI):** A cada push ou pull request, o projeto é testado automaticamente em ambientes **Node.js 20.x e 22.x** (Ubuntu) para garantir compatibilidade e estabilidade.
+* **Segurança na Publicação:** O workflow de release utiliza o padrão **SLSA Provenance**, garantindo que o pacote publicado no NPM foi gerado de forma íntegra e verificável a partir deste repositório.
+* **Build Automatizado:** Validação rigorosa de transpilação TypeScript e resolução de dependências via `npm ci`.
 
 ---
 
@@ -107,6 +117,25 @@ npm install
 ```bash
 npm run start
 ```
+
+---
+
+## 🛠️ Desenvolvimento
+
+Para contribuir ou rodar os testes localmente:
+
+```bash
+# Instalação limpa de dependências
+npm ci
+
+# Execução de testes unitários e de integração
+npm test
+
+# Verificação de linting e padrões de código
+npm run lint
+
+# Build de produção
+npm run build
 
 ---
 
