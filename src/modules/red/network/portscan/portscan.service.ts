@@ -1,115 +1,107 @@
 import { Injectable } from '@nestjs/common';
+import chalk from 'chalk';
+import * as cliProgress from 'cli-progress';
 import * as net from 'net';
 
 @Injectable()
 export class PortscanService {
-  private commonPorts: Record<number, string> = {
-    21: 'FTP',
-    22: 'SSH',
-    23: 'Telnet',
-    25: 'SMTP',
-    53: 'DNS',
-    80: 'HTTP',
-    110: 'POP3',
-    143: 'IMAP',
-    443: 'HTTPS',
-    445: 'SMB',
-    3306: 'MySQL',
-    5432: 'PostgreSQL',
-    8080: 'HTTP-Proxy',
-    27017: 'MongoDB',
-  };
+  async scanRange(host: string, start: number, end: number): Promise<any[]> {
+    const openPorts: any[] = [];
+    const totalPorts = end - start + 1;
+    const concurrencyLimit = 50;
 
-  /**
-   * Tenta conectar e capturar o banner em um único fluxo de socket
-   */
-  private async probePort(
-    host: string,
-    port: number,
-    timeout = 1500,
-  ): Promise<any | null> {
+    const progressBar = new cliProgress.SingleBar({
+      format: `${chalk.red('Sentinel Scan')} {bar} | {percentage}% | {value}/{total} Ports | Analisando: {port}`,
+      barCompleteChar: '\u2588',
+      barIncompleteChar: '\u2591',
+      hideCursor: true
+    });
+
+    progressBar.start(totalPorts, 0, { port: 'Iniciando' });
+
+    for (let i = start; i <= end; i += concurrencyLimit) {
+      const currentBatch: number[] = [];
+      for (let j = 0; j < concurrencyLimit && (i + j) <= end; j++) {
+        currentBatch.push(i + j);
+      }
+
+      await Promise.all(currentBatch.map(async (port) => {
+        try {
+          const isOpen = await this.checkPort(host, port);
+          if (isOpen) {
+            const banner = await this.grabBanner(host, port);
+            openPorts.push({
+              port,
+              service: this.inferService(port),
+              banner: banner
+            });
+          }
+        } finally {
+          progressBar.increment(1, { port: port.toString() });
+        }
+      }));
+    }
+
+    progressBar.stop();
+    return openPorts.sort((a, b) => a.port - b.port);
+  }
+
+  private checkPort(host: string, port: number): Promise<boolean> {
     return new Promise((resolve) => {
       const socket = new net.Socket();
-      let banner = '';
-      let isResolved = false;
+      socket.setTimeout(300);
 
-      socket.setTimeout(timeout);
-
-      socket.connect(port, host, () => {
-        if ([80, 443, 8080].includes(port)) {
-          socket.write('HEAD / HTTP/1.1\r\nHost: ' + host + '\r\n\r\n');
-        } else {
-          socket.write('\r\n');
-        }
-      });
-
-      socket.on('data', (data) => {
-        banner += data
-          .toString()
-          .replace(/[\r\n\t]/g, ' ')
-          .trim();
+      socket.on('connect', () => {
         socket.destroy();
+        resolve(true);
       });
 
       socket.on('timeout', () => {
-        if (!isResolved) {
-          socket.destroy();
-
-          resolve(banner ? { port, banner } : null);
-          isResolved = true;
-        }
+        socket.destroy();
+        resolve(false);
       });
 
       socket.on('error', () => {
-        if (!isResolved) {
-          resolve(null);
-          isResolved = true;
-        }
+        socket.destroy();
+        resolve(false);
       });
 
-      socket.on('close', () => {
-        if (!isResolved) {
-          const service = this.commonPorts[port] || 'Unknown';
-          resolve(
-            banner
-              ? { port, service, banner: banner.substring(0, 64) }
-              : { port, service, banner: 'No banner' },
-          );
-          isResolved = true;
-        }
-      });
+      socket.connect(port, host);
     });
   }
 
-  async scanRange(
-    host: string,
-    startPort: number,
-    endPort: number,
-    onProgress?: () => void,
-  ): Promise<any[]> {
-    const results: any[] = [];
-    const concurrency = 64;
+  private async grabBanner(host: string, port: number): Promise<string> {
+    return new Promise((resolve) => {
+      const socket = new net.Socket();
+      let banner = 'N/A';
 
-    for (let port = startPort; port <= endPort; port += concurrency) {
-      const limit = Math.min(port + concurrency, endPort + 1);
+      socket.setTimeout(500);
+      
+      socket.on('data', (data) => {
+        banner = data.toString().replace(/[\r\n]/g, ' ').trim();
+        socket.destroy();
+      });
 
-      // CORREÇÃO: Definimos explicitamente que o array aceita Promessas
-      const batch: Promise<any>[] = [];
+      socket.on('error', () => resolve('N/A'));
+      socket.on('timeout', () => {
+        socket.destroy();
+        resolve(banner);
+      });
 
-      for (let p = port; p < limit; p++) {
-        batch.push(
-          (async (pNum) => {
-            const result = await this.probePort(host, pNum);
-            if (onProgress) onProgress();
-            return result;
-          })(p),
-        );
+      socket.connect(port, host);
+      
+      if (port === 80 || port === 443) {
+        socket.write('HEAD / HTTP/1.1\r\nHost: ' + host + '\r\n\r\n');
       }
+    });
+  }
 
-      const batchResults = await Promise.all(batch);
-      results.push(...batchResults.filter(Boolean));
-    }
-
-    return results;
+  private inferService(port: number): string {
+    const services: Record<number, string> = {
+      21: 'FTP', 22: 'SSH', 23: 'Telnet', 25: 'SMTP', 53: 'DNS',
+      80: 'HTTP', 443: 'HTTPS', 3306: 'MySQL', 5432: 'PostgreSQL',
+      8080: 'HTTP-Proxy', 27017: 'MongoDB'
+    };
+    return services[port] || 'Unknown';
   }
 }

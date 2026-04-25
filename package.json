@@ -4,7 +4,7 @@
   "bin": {
     "sentinel-cli": "dist/main.js"
   },
-  "description": "A modular Node.js security platform unifying Red Team reconnaissance and Blue Team auditing into a single, report-driven CLI tool.",
+  "description": "Enterprise Security Framework & Vulnerability Scanner CLI built with NestJS and Puppeteer. Features Red Team offensive scans, Blue Team defensive audits, and professional PDF reporting.",
   "author": "HugoZAuad",
   "private": true,
   "license": "UNLICENSED",
