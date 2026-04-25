@@ -11,16 +11,15 @@ export class CrawlerService {
     private readonly fingerprint: FingerprintService,
   ) {}
 
-  async crawl(url: string, p0: number): Promise<string[]> {
+  async crawl(url: string, depth: number): Promise<string[]> {
     try {
       const res = await this.http.get(url);
       if (!res?.data) return [];
 
-      const headers = this.normalizeHeaders(res.headers);
       const body = String(res.data);
 
-      const profiles = this.fingerprint.analyze(headers, body);
-      const requiresJs = profiles.some((p) => p.needsPuppeteer);
+      const techs = await this.fingerprint.identify(url);
+      const requiresJs = techs.some((t) => t.isRisk || t.name === 'React' || t.name === 'Angular');
 
       const staticLinks = this.extractStaticLinks(body, url);
 
@@ -50,7 +49,7 @@ export class CrawlerService {
     const origin = new URL(baseUrl).origin;
 
     while ((match = regex.exec(html)) !== null) {
-      let href = match[1];
+      const href = match[1];
       if (href.startsWith('/')) {
         links.push(`${origin}${href}`);
       } else if (href.startsWith('http')) {

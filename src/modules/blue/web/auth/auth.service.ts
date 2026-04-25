@@ -1,82 +1,86 @@
 import { Injectable } from '@nestjs/common';
-import { HttpService } from '../../../../core/http/http.service';
-import { AuthCredentials, AuthResult, LoginForm } from './auth.types';
+import { BrowserService } from '../../../../core/browser/browser.service';
+import { LoggerService } from '../../../../infrastructure/logger/logger.service';
+import { AuthAudit, AuthCredentials, AuthResult } from './auth.types';
 
 @Injectable()
 export class AuthService {
-  constructor(private readonly http: HttpService) {}
+  constructor(
+    private readonly browser: BrowserService,
+    private readonly logger: LoggerService,
+  ) {}
 
-  async detectLoginForm(url: string): Promise<LoginForm | null> {
+  async auditAuthentication(url: string, credentials?: AuthCredentials): Promise<AuthResult> {
+    const page = await this.browser.newPage();
+    
     try {
-      const res = await this.http.get(url);
-      if (!res) return null;
+      this.logger.info(`Auditando segurança de autenticação em: ${url}`);
+      const response = await page.goto(url, { waitUntil: 'networkidle2' });
 
-      return this.parseLoginForm(res.data, url);
-    } catch {
-      return null;
-    }
-  }
-
-  async tryLogin(form: LoginForm, credentials: AuthCredentials): Promise<AuthResult> {
-    try {
-      const data: Record<string, string> = {
-        [form.usernameField]: credentials.username,
-        [form.passwordField]: credentials.password,
+      const cookies = await page.cookies();
+      const audit: AuthAudit = {
+        hasHttps: url.startsWith('https'),
+        hasCsrfToken: await this.checkCsrfPresence(page),
+        isPasswordVisible: false,
+        cookieSecurity: this.analyzeCookies(cookies),
       };
 
-      const res =
-        form.method === 'POST'
-          ? await this.http.post(form.action, data)
-          : await this.http.get(
-              `${form.action}?${new URLSearchParams(data).toString()}`
-            );
-
-      if (!res) {
-        return {
-          url: form.action,
-          success: false,
-          error: 'Sem resposta',
-        };
+      const formExists = await page.$('input[type="password"]');
+      
+      if (!formExists) {
+        return { url, success: false, audit, error: 'Nenhum formulário de senha detectado.' };
       }
 
-      const success = this.detectLoginSuccess(res.data, res.status);
+      let loginSuccess = false;
+      if (credentials) {
+        loginSuccess = await this.attemptLogin(page, credentials);
+      }
 
-      return {
-        url: form.action,
-        success,
-        credentials: success ? credentials : undefined,
-      };
-    } catch {
-      return {
-        url: form.action,
-        success: false,
-        error: 'Falha ao tentar autenticação',
-      };
+      await page.close();
+      return { url, success: loginSuccess, audit };
+
+    } catch (error) {
+      this.logger.error('Erro durante auditoria de Auth', error);
+      await page.close();
+      throw error;
     }
   }
 
-  private parseLoginForm(body: string, baseUrl: string): LoginForm | null {
-    const hasPassword = body.includes('type="password"');
-    if (!hasPassword) return null;
+  private async checkCsrfPresence(page: any): Promise<boolean> {
+    return await page.evaluate(() => {
+      const inputs = Array.from(document.querySelectorAll('input[type="hidden"]'));
+      return inputs.some(input => {
+        const name = (input as HTMLInputElement).name.toLowerCase();
+        return name.includes('csrf') || name.includes('token') || name.includes('hash');
+      });
+    });
+  }
 
+  private analyzeCookies(cookies: any[]): AuthAudit['cookieSecurity'] {
+    const sessionCookie = cookies[0] || {};
     return {
-      action: baseUrl,
-      method: 'POST',
-      usernameField: 'username',
-      passwordField: 'password',
+      httpOnly: sessionCookie.httpOnly || false,
+      secure: sessionCookie.secure || false,
+      sameSite: sessionCookie.sameSite || 'None',
     };
   }
 
-  private detectLoginSuccess(body: string, status: number): boolean {
-    if (status === 302) return true;
+  private async attemptLogin(page: any, creds: AuthCredentials): Promise<boolean> {
+    try {
+      await page.type('input[type="password"]', creds.password);
+      
+      const userField = await page.$('input[type="text"], input[type="email"]');
+      if (userField) await userField.type(creds.username);
 
-    const lower = body.toLowerCase();
+      await Promise.all([
+        page.keyboard.press('Enter'),
+        page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 5000 }).catch(() => {}),
+      ]);
 
-    return ![
-      'invalid',
-      'incorrect',
-      'error',
-      'failed',
-    ].some(i => lower.includes(i));
+      const currentUrl = page.url();
+      return currentUrl !== page.url(); 
+    } catch {
+      return false;
+    }
   }
 }
