@@ -19,19 +19,32 @@ export class WebscanService {
     this.logger.log(`Iniciando análise completa em: ${targetUrl}`);
     
     try {
+      const targetHostname = new URL(targetUrl).hostname;
+
       this.logger.startTask('Explorando estrutura e interações da página...');
       const urls = await this.interaction.explore(targetUrl);
-      this.logger.stopTask(`Descobertos ${urls.length} links/pontos de interação.`, 'success');
+      const filteredUrls = urls.filter(u => u.includes(targetHostname));
+      this.logger.stopTask(`Descobertos ${filteredUrls.length} links internos para análise.`, 'success');
 
-      this.logger.startTask('Executando scan ativo de DOM XSS...');
+      this.logger.startTask('Executando scan ativo de DOM XSS (Paralelo)...');
       const allFindings: any[] = [];
+      const concurrencyLimit = 5;
+      for (let i = 0; i < filteredUrls.length; i += concurrencyLimit) {
+        const chunk = filteredUrls.slice(i, i + concurrencyLimit);
+        
+        const scanPromises = chunk.map(async (url) => {
+          try {
+            return await this.domXss.scan(url);
+          } catch (e) {
+            this.logger.info(`Falha ao escanear URL específica: ${this.formatter.truncate(url, 30)}`);
+            return [];
+          }
+        });
 
-      for (const url of urls) {
-        if (url.includes(new URL(targetUrl).hostname)) {
-          const findings = await this.domXss.scan(url);
-          allFindings.push(...findings);
-        }
+        const results = await Promise.all(scanPromises);
+        allFindings.push(...results.flat());
       }
+      
       this.logger.stopTask('Varredura de vulnerabilidades concluída.', 'success');
 
       this.renderResults(allFindings);
@@ -39,32 +52,29 @@ export class WebscanService {
       if (allFindings.length > 0) {
         const reportPath = this.report.save('webscan-results', {
           target: targetUrl,
-          date: new Date(),
+          totalUrls: filteredUrls.length,
           findings: allFindings,
-          urlsDiscovered: urls
         });
-        this.logger.success(`Relatório detalhado gerado: ${reportPath}`);
+        this.logger.success(`Relatório gerado: ${reportPath}`);
       } else {
-        this.logger.info('Nenhuma vulnerabilidade crítica encontrada nesta sessão.');
+        this.logger.info('Nenhuma vulnerabilidade detectada.');
       }
 
     } catch (error) {
-      this.logger.error('Erro crítico durante o Webscan', error);
+      this.logger.error('Erro fatal no motor de Webscan', error);
     }
   }
 
   private renderResults(findings: any[]): void {
     if (findings.length === 0) return;
 
-    const head = ['TIPO', 'URL ALVO', 'PAYLOAD / EVIDÊNCIA'];
+    const head = ['TIPO', 'URL ALVO', 'EVIDÊNCIA'];
     const rows = findings.map(f => [
       f.type,
-      this.formatter.truncate(f.url, 30),
-      this.formatter.truncate(f.payload || f.evidence, 40)
+      this.formatter.truncate(f.url, 35),
+      this.formatter.truncate(f.payload || f.evidence, 45)
     ]);
 
-    const table = this.formatter.formatTable(head, rows, 'red');
-    
-    console.log('\n' + table + '\n');
+    console.log('\n' + this.formatter.formatTable(head, rows, 'red') + '\n');
   }
 }
