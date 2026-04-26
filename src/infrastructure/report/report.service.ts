@@ -240,7 +240,7 @@ export class ReportService {
           `}
 
           <div class="footer">
-            Sentinel CLI v1.0.0 - Ferramenta de Auditoria Modular Automatizada<br>
+            Sentinel CLI v1.2.0 - Ferramenta de Auditoria Modular Automatizada<br>
             Este documento é confidencial e destinado exclusivamente ao proprietário do sistema analisado.
           </div>
         </div>
