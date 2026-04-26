@@ -5,8 +5,9 @@
 [![Node.js](https://img.shields.io/badge/node-%3E%3D18.x-brightgreen)](https://nodejs.org/)
 [![NestJS](https://img.shields.io/badge/nestjs-%5E11.0-red)](https://nestjs.com/)
 [![TypeScript](https://img.shields.io/badge/typescript-%5E5.7-blue)](https://www.typescriptlang.org/)
+[![Prisma](https://img.shields.io/badge/Prisma-ORM-2D3748)](https://www.prisma.io/)
 
-O **Sentinel** é uma ferramenta de linha de comando (CLI) modular desenvolvida em **NestJS** para auditoria de segurança cibernética. Ele combina operações de **Red Team** (Ofensivo) e **Blue Team** (Defensivo), permitindo que desenvolvedores e analistas de segurança identifiquem vulnerabilidades e validem a conformidade de seus ativos digitais em tempo real.
+O **Sentinel** é uma ferramenta de linha de comando (CLI) modular desenvolvida em **NestJS** para auditoria de segurança cibernética. Ele combina operações de **Red Team** (Ofensivo) e **Blue Team** (Defensivo), permitindo que desenvolvedores e analistas identifiquem vulnerabilidades e validem a conformidade com rastreabilidade total em banco de dados.
 
 ---
 
@@ -18,74 +19,61 @@ Esta ferramenta foi criada apenas para fins educacionais e testes de segurança 
 
 ## 📋 Tabela de Conteúdos
 
-- [Sentinel CLI 🛡️](#sentinel-cli-️)
-  - [📄 Isenção de Responsabilidade](#-isenção-de-responsabilidade)
-  - [📋 Tabela de Conteúdos](#-tabela-de-conteúdos)
-  - [🚀 Visão Geral](#-visão-geral)
-  - [✨ Funcionalidades Principais](#-funcionalidades-principais)
-    - [🔴 Red Team (Módulo Ofensivo)](#-red-team-módulo-ofensivo)
-    - [🔵 Blue Team (Módulo Defensivo)](#-blue-team-módulo-defensivo)
-  - [🛠️ Arquitetura Técnica](#️-arquitetura-técnica)
-  - [⚙️ CI/CD \& Qualidade de Software](#️-cicd--qualidade-de-software)
-  - [📦 Instalação e Uso](#-instalação-e-uso)
-    - [Pré-requisitos](#pré-requisitos)
-    - [Passo a Passo](#passo-a-passo)
-  - [🛠️ Desenvolvimento](#️-desenvolvimento)
-  - [👨‍💻 Autor](#-autor)
+- [🚀 Visão Geral](#-visão-geral)
+- [✨ Funcionalidades Principais](#-funcionalidades-principais)
+- [🛠️ Arquitetura Técnica](#️-arquitetura-técnica)
+- [🗄️ Persistência e Rastreabilidade](#️-persistência-e-rastreabilidade)
+- [📦 Instalação e Uso](#-instalação-e-uso)
+- [📖 Como Usar](#-como-usar)
+- [👨‍💻 Autor](#-autor)
 
 ---
 
 ## 🚀 Visão Geral
 
-Diferente de scanners convencionais, o Sentinel utiliza um motor baseado em **Puppeteer** para realizar auditorias dinâmicas. Ele não apenas lê o código estático, mas interage com a aplicação como um usuário real, permitindo a detecção de vulnerabilidades modernas em SPAs (React, Vue, Angular) e a geração de relatórios executivos em PDF.
+Diferente de scanners convencionais, o Sentinel utiliza um motor baseado em **Puppeteer** para realizar auditorias dinâmicas em tempo de execução. Ele interage com a aplicação como um usuário real, permitindo a detecção de vulnerabilidades modernas em SPAs e gerando relatórios executivos baseados em dados históricos persistidos.
 
 ---
 
 ## ✨ Funcionalidades Principais
 
 ### 🔴 Red Team (Módulo Ofensivo)
-
-- **Web Vulnerability Scanner**: Detecção de falhas como DOM XSS e riscos de injeção por meio de análise comportamental do DOM.
-- **Network Port Scanner**: Mapeamento de portas abertas com captura de banners de serviço para identificação de tecnologias expostas.
+- **Web Vulnerability Scanner**: Detecção de falhas como DOM XSS e injeções via análise comportamental.
+- **Network Port Scanner**: Mapeamento de portas e captura de banners para identificação de serviços.
 
 ### 🔵 Blue Team (Módulo Defensivo)
-
-- **Security Score Engine**: Algoritmo que calcula a postura de segurança do alvo (0-100) com base em múltiplos fatores de risco.
-- **Fingerprint & Tech Stack Audit**: Identificação de servidores, linguagens e frameworks, com alertas para versões obsoletas.
-- **Authentication Auditor**: Verificação de cookies (HttpOnly, Secure), transporte (HTTPS) e proteções contra CSRF.
-- **Enterprise PDF Reporting**: Geração de relatórios profissionais com design moderno, prontos para apresentação executiva.
+- **Security Score Engine**: Algoritmo avançado que calcula a postura de segurança (0-100).
+- **Fingerprint Audit**: Identificação de tech stack e alertas para tecnologias expostas.
+- **Authentication Auditor**: Verificação de cookies (HttpOnly/Secure), HTTPS e CSRF.
+- **Professional PDF Reporting**: Relatórios técnicos completos com sumário executivo e matriz de severidade.
 
 ---
 
 ## 🛠️ Arquitetura Técnica
 
-O projeto foi construído sob princípios de **Clean Architecture** e **SOLID**:
-
-- **Core**: Motores de infraestrutura como `BrowserService` (Puppeteer) e `FormatterService`.
-- **Modules**: Separação clara entre domínios `Red` e `Blue`.
-- **Infrastructure**: Serviços transversais como loggers e geradores de relatórios.
-
-Estrutura do projeto:
+O projeto segue os princípios de **Clean Architecture** e **SOLID**:
 
 ```text
 src/
-├── cli/            # Orquestração da interface de linha de comando
-├── core/           # Serviços base e motores (Browser, Formatter, Http)
-├── infrastructure/ # Implementações técnicas (Logger, Report PDF)
-├── modules/        # Regras de negócio divididas por domínio
-│   ├── red/        # Ferramentas ofensivas (Portscan, Webscan)
-│   └── blue/       # Ferramentas defensivas (Score, Auth, Fingerprint)
-└── main.ts         # Ponto de entrada da aplicação
-
+├── cli/              # Interface de comando interativa (Inquirer)
+├── core/             # Motores base (Browser, Formatter, Http)
+├── infrastructure/   # Persistência (Prisma) e Loggers
+├── modules/          # Domínios de negócio
+│   ├── red/          # Offensive Tools (Portscan, Webscan)
+│   ├── blue/         # Defensive Tools (Score, Auth, Fingerprint)
+│   └── shared/       # Report Generator (PDF Engine)
+└── main.ts           # Inicialização silenciosa do NestJS
 ```
 
-## ⚙️ CI/CD & Qualidade de Software
+## 🗄️ Persistência e Rastreabilidade
 
-O Sentinel CLI utiliza **GitHub Actions** para garantir a integridade do código e a segurança na entrega.
+O Sentinel utiliza Prisma ORM e PostgreSQL para garantir que cada teste seja registrado.
 
-* **Continuous Integration (CI):** A cada push ou pull request, o projeto é testado automaticamente em ambientes **Node.js 20.x e 22.x** (Ubuntu) para garantir compatibilidade e estabilidade.
-* **Segurança na Publicação:** O workflow de release utiliza o padrão **SLSA Provenance**, garantindo que o pacote publicado no NPM foi gerado de forma íntegra e verificável a partir deste repositório.
-* **Build Automatizado:** Validação rigorosa de transpilação TypeScript e resolução de dependências via `npm ci`.
+- **Single Source of Truth**: Relatórios em PDF são gerados a partir dos dados persistidos no banco, não da memória volátil.
+
+- **Audit Trail**: Todos os scans (mesmo os sem vulnerabilidades) são salvos para rastreabilidade histórica.
+
+- **Atomic Transactions**: Criação de Scans e Findings em operações atômicas para integridade dos dados.
 
 ---
 
@@ -93,26 +81,38 @@ O Sentinel CLI utiliza **GitHub Actions** para garantir a integridade do código
 
 ### Pré-requisitos
 
-- Node.js (v18+)
-- npm ou yarn
-- Chromium (instalado automaticamente pelo Puppeteer)
+- Node.js v18+
+
+- Docker e Docker Compose (para o banco de dados)
+
+- Google Chrome/Chromium
 
 ### Passo a Passo
 
-1. Clone o repositório:
+#### Clone e Instale:
 
 ```bash
-git clone https://github.com/seu-usuario/sentinel-cli.git
+git clone [https://github.com/seu-usuario/sentinel-cli.git](https://github.com/seu-usuario/sentinel-cli.git)
 cd sentinel-cli
-```
-
-2. Instale as dependências:
-
-```bash
 npm install
 ```
 
-3. Compile e inicie o Sentinel:
+#### Configure o Ambiente:
+
+Crie um arquivo .env na raiz:
+
+```env
+DATABASE_URL="postgresql://johndoe:randompassword@localhost:5432/sentinel_db?schema=public"
+```
+
+#### Suba o Banco de Dados:
+
+```bash
+docker-compose up -d
+npx prisma migrate dev
+```
+
+#### Inicie o Sentinel:
 
 ```bash
 npm run start
@@ -120,43 +120,20 @@ npm run start
 
 ---
 
-## 🛠️ Desenvolvimento
-
-Para contribuir ou rodar os testes localmente:
-
-```bash
-# Instalação limpa de dependências
-npm ci
-
-# Execução de testes unitários e de integração
-npm test
-
-# Verificação de linting e padrões de código
-npm run lint
-
-# Build de produção
-npm run build
-
----
-
 ## 📖 Como Usar
 
-Ao iniciar, o Sentinel apresenta um menu interativo e intuitivo:
+O Sentinel opera através de um menu interativo:
 
-- **Modo Red Team**: escolha entre scan de rede ou web, informe a URL/IP alvo e acompanhe os logs em tempo real.
-- **Modo Blue Team**: selecione "Security Score" para executar a auditoria completa. Ao final, o sistema oferecerá a exportação dos resultados em PDF.
-- **Relatórios**: todos os arquivos gerados são salvos automaticamente na pasta raiz `./reports`.
+- Selecione o Time: Red Team ou Blue Team.
 
-Exemplos de comando:
+- Escolha a Ferramenta: Cada ferramenta solicita os inputs necessários (URL/IP).
 
-```bash
-npm run start -- webscan https://example.com
-npm run start -- portscan 127.0.0.1 1 1024
-```
+- Persistência: O resultado é automaticamente salvo no PostgreSQL.
+
+- Relatório: No modo Security Score, confirme a geração do PDF para receber um report profissional na pasta ./reports.
 
 ---
 
 ## 👨‍💻 Autor
 
-**Hugo Zeymer Auad**  
-Software Engineer & Cybersec Enthusiast
+Hugo Zeymer Auad Software Engineer & Cybersecurity Specialist
