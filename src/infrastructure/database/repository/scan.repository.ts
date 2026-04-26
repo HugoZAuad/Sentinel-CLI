@@ -15,12 +15,30 @@ export class ScanRepository {
           create: findings.map(f => ({
             type: f.type,
             evidence: String(f.evidence),
-            severity: f.severity || 'LOW',
+            severity: f.severity,
             team: f.team,
           })),
         },
       },
       include: { findings: true },
+    });
+  }
+
+  async createNetworkScan(target: string, startPort: number, endPort: number, ports: any[]) {
+    return this.prisma.networkScan.create({
+      data: {
+        target,
+        startPort,
+        endPort,
+        ports: {
+          create: ports.map(p => ({
+            port: p.port,
+            service: p.service,
+            banner: String(p.banner),
+          })),
+        },
+      },
+      include: { ports: true },
     });
   }
 }
