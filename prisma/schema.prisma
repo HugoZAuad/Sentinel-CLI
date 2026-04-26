@@ -1,0 +1,18 @@
+model Scan {
+  id        String    @id @default(uuid())
+  target    String
+  score     Int
+  mode      String
+  createdAt DateTime  @default(now())
+  findings  Finding[]
+}
+
+model Finding {
+  id       String @id @default(uuid())
+  scanId   String
+  scan     Scan   @relation(fields: [scanId], references: [id])
+  type     String
+  evidence String
+  severity String
+  team     String
+}
