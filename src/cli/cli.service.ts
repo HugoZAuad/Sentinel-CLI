@@ -1,7 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import chalk from 'chalk';
-import inquirer from 'inquirer';
+import * as inquirer from 'inquirer';
 import { FormatterService } from '../core/formatter/formatter.service';
+import { ScanRepository } from '../infrastructure/database/repository/scan.repository';
 import { LoggerService } from '../infrastructure/logger/logger.service';
 import { ReportService } from '../infrastructure/report/report.service';
 import { SecurityScoreService } from '../modules/blue/score/security-score.service';
@@ -25,6 +26,7 @@ export class CliService {
     private readonly logger: LoggerService,
     private readonly formatter: FormatterService,
     private readonly reportService: ReportService,
+    private readonly scanRepository: ScanRepository,
   ) {}
 
   async start(): Promise<void> {
@@ -99,6 +101,16 @@ export class CliService {
     ]);
     const [start, end] = range.split('-').map(Number);
     const openPorts = await this.portscanService.scanRange(host, start, end);
+    
+    const findings = openPorts.map(p => ({ 
+      type: 'Porta Aberta', 
+      evidence: `${p.port} (${p.service})`, 
+      team: 'RED', 
+      severity: 'LOW' 
+    }));
+    
+    await this.scanRepository.createFullScan(host, 0, 'PORT_SCAN', findings);
+
     const head = ['PORTA', 'SERVIÇO', 'BANNER'];
     const rows = openPorts.map(p => [p.port, p.service, p.banner || 'N/A']);
     console.log(this.formatter.formatTable(head, rows, 'red'));
@@ -107,12 +119,26 @@ export class CliService {
   private async runWebScan() {
     const { url } = await this.prompt([{ type: 'input', name: 'url', message: 'URL:' }]);
     this.lastTargetUrl = url;
-    this.lastWebFindings = await this.webscanService.execute(url);
+    const results = await this.webscanService.execute(url);
+    this.lastWebFindings = results.map(f => ({ ...f, team: 'RED' }));
+    
+    await this.scanRepository.createFullScan(url, 0, 'WEB_SCAN', this.lastWebFindings);
+    this.logger.success(`Webscan concluído para ${url}`);
   }
 
   private async runFingerprintScan() {
     const { url } = await this.prompt([{ type: 'input', name: 'url', message: 'URL:' }]);
     const techs = await this.fingerprintService.identify(url);
+    
+    const findings = techs.map(t => ({ 
+      type: 'Tecnologia', 
+      evidence: t.name, 
+      team: 'BLUE', 
+      severity: 'INFO' 
+    }));
+    
+    await this.scanRepository.createFullScan(url, 0, 'FINGERPRINT', findings);
+
     const head = ['TECNOLOGIA', 'CATEGORIA', 'RISCO'];
     const rows = techs.map(t => [t.name, t.category, t.isRisk ? chalk.red('SIM') : chalk.green('NÃO')]);
     console.log(this.formatter.formatTable(head, rows, 'blue'));
@@ -121,6 +147,14 @@ export class CliService {
   private async runAuthAudit() {
     const { url } = await this.prompt([{ type: 'input', name: 'url', message: 'URL:' }]);
     const result = await this.authService.auditAuthentication(url);
+    
+    const findings = [
+      { type: 'HTTPS', evidence: result.audit.hasHttps ? 'OK' : 'FALHA', team: 'BLUE', severity: result.audit.hasHttps ? 'LOW' : 'HIGH' },
+      { type: 'CSRF', evidence: result.audit.hasCsrfToken ? 'OK' : 'FALHA', team: 'BLUE', severity: result.audit.hasCsrfToken ? 'LOW' : 'MEDIUM' }
+    ];
+    
+    await this.scanRepository.createFullScan(url, 0, 'AUTH_AUDIT', findings);
+
     const head = ['MÉTRICA', 'STATUS'];
     const rows = [
       ['HTTPS', result.audit.hasHttps ? 'OK' : 'FALHA'],
@@ -139,7 +173,17 @@ export class CliService {
     }]);
 
     const result = await this.scoreService.calculateGlobalScore(url);
-    console.log(chalk.bold(`\nSCORE: ${result.score}/100\n`));
+    const blueFindings = result.details.map(d => ({ 
+      type: d.aspect, 
+      evidence: d.status, 
+      team: 'BLUE', 
+      severity: 'MEDIUM' 
+    }));
+    
+    const allFindings = [...blueFindings, ...this.lastWebFindings];
+    const savedScan = await this.scanRepository.createFullScan(url, result.score, 'FULL_SCORE', allFindings);
+
+    console.log(chalk.bold(`\nSCORE: ${savedScan.score}/100\n`));
     
     const head = ['ASPECTO', 'STATUS'];
     const rows = result.details.map(d => [d.aspect, d.status]);
@@ -153,14 +197,8 @@ export class CliService {
     }]);
 
     if (confirmPdf) {
-      const reportData = {
-        target: url,
-        score: result.score,
-        redFindings: this.lastWebFindings.map(f => ({ type: f.type, evidence: f.evidence })),
-        blueDetails: result.details
-      };
-      const path = await this.reportService.generatePdf(reportData, `report_${Date.now()}`);
-      this.logger.success(`Salvo em: ${path}`);
+      const path = await this.reportService.generatePdf(savedScan, `sentinel_${savedScan.id}`);
+      this.logger.success(`Relatório salvo em: ${path}`);
     }
   }
 }
