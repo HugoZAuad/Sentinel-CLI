@@ -1,10 +1,10 @@
 import { Injectable } from '@nestjs/common';
 import chalk from 'chalk';
-import * as inquirer from 'inquirer';
+import inquirer from 'inquirer';
 import { FormatterService } from '../core/formatter/formatter.service';
 import { ScanRepository } from '../infrastructure/database/repository/scan.repository';
 import { LoggerService } from '../infrastructure/logger/logger.service';
-import { Finding, ReportService, ScanMeta } from '../infrastructure/report/report.service';
+import { EndpointAnalysisDetail, Finding, ReportService, ScanMeta } from '../infrastructure/report/report.service';
 import { ScoreDetail, SecurityScoreService } from '../modules/blue/score/security-score.service';
 import { AuthService } from '../modules/blue/web/auth/auth.service';
 import { FingerprintService } from '../modules/blue/web/fingerprint/fingerprint.service';
@@ -15,7 +15,10 @@ import { WebscanService } from '../modules/red/web/webscan/webscan.service';
 export class CliService {
   private prompt = inquirer.createPromptModule();
   private lastWebFindings: Finding[] = [];
+  private lastPortFindings: Finding[] = [];
   private lastDiscoveredEndpoints: string[] = [];
+  private lastAnalyzedEndpoints: string[] = [];
+  private lastEndpointDetails: EndpointAnalysisDetail[] = [];
   private lastTargetUrl: string = '';
 
   constructor(
@@ -32,6 +35,7 @@ export class CliService {
 
   async start(): Promise<void> {
     this.showBanner();
+
     while (true) {
       const { mode } = await this.prompt([
         {
@@ -47,22 +51,44 @@ export class CliService {
       ]);
 
       if (mode === 'exit') process.exit(0);
-      mode === 'red' ? await this.handleRedTeam() : await this.handleBlueTeam();
+
+      if (mode === 'red') await this.handleRedTeam();
+      if (mode === 'blue') await this.handleBlueTeam();
     }
   }
 
   private showBanner() {
     console.clear();
-    console.log(
-      chalk.red(`
+    console.log(chalk.red(`
     ███████╗███████╗███╗   ██╗████████╗██╗███╗   ██╗███████╗██╗     
     ██╔════╝██╔════╝████╗  ██║╚══██╔══╝██║████╗  ██║██╔════╝██║     
     ███████╗█████╗  ██╔██╗ ██║   ██║   ██║██╔██╗ ██║█████╗  ██║     
     ╚════██║██╔══╝  ██║╚██╗██║   ██║   ██║██║╚██╗██║██╔══╝  ██║     
     ███████║███████╗██║ ╚████║   ██║   ██║██║ ╚████║███████╗███████╗
     ╚══════╝╚══════╝╚═╝  ╚═══╝   ╚═╝   ╚═╝╚═╝  ╚═══╝╚══════╝╚══════╝
-    `),
-    );
+    `));
+  }
+
+  private renderFindingSeverity(severity: Finding['severity']): string {
+    if (severity === 'CRITICAL') return chalk.bgRed.white(severity);
+    if (severity === 'HIGH') return chalk.red(severity);
+    if (severity === 'MEDIUM') return chalk.yellow(severity);
+    return chalk.gray(severity);
+  }
+
+  private renderFindingOrigin(finding: Finding): string {
+    const scope = finding.category === 'portscan' ? 'PORT' : 'WEB';
+    if (finding.team === 'RED') {
+      return chalk.bgRed.white(`RED · ${scope}`);
+    }
+    return chalk.bgBlue.white(`BLUE · ${scope}`);
+  }
+
+  private printSectionHeader(title: string, description: string, color: 'red' | 'blue') {
+    const colorFn = color === 'red' ? chalk.red : chalk.blue;
+    console.log('\n');
+    console.log(chalk.bold(colorFn(title)));
+    console.log(chalk.gray(`${description}\n`));
   }
 
   private async handleRedTeam() {
@@ -90,9 +116,9 @@ export class CliService {
         name: 'tool',
         message: chalk.blue('MODO DEFENSIVO:'),
         choices: [
-          { name: '📊 Security Score & PDF', value: 'score' },
           { name: '🕵️  Fingerprint', value: 'finger' },
           { name: '🔑 Auth Audit', value: 'auth' },
+          { name: '📊 Security Score', value: 'score' },
           { name: '⬅️ Voltar', value: 'back' },
         ],
       },
@@ -110,92 +136,79 @@ export class CliService {
     ]);
 
     const [start, end] = range.split('-').map(Number);
-    const scanStart = Date.now();
     const openPorts = await this.portscanService.scanRange(host, start, end);
-    const duration = `${((Date.now() - scanStart) / 1000).toFixed(1)}s`;
 
-    await this.scanRepository.createNetworkScan(host, start, end, openPorts);
+    this.lastPortFindings = openPorts.map((p) => ({
+      type: 'Porta Aberta',
+      evidence: `${p.port} (${p.service})`,
+      team: 'RED',
+      severity: 'LOW',
+      category: 'portscan',
+    }));
 
-    console.log('\n');
-    const head = ['PORTA', 'SERVIÇO', 'BANNER'];
-    const rows = openPorts.map((p) => [p.port, p.service, p.banner || 'N/A']);
-    console.log(this.formatter.formatTable(head, rows, 'red'));
+    await this.scanRepository.createFullScan(host, 0, 'PORT_SCAN', this.lastPortFindings);
 
-    const { confirmPdf } = await this.prompt([
-      {
-        type: 'confirm',
-        name: 'confirmPdf',
-        message: 'Gerar PDF do mapeamento de rede?',
-        default: true,
-      },
+    this.printSectionHeader(
+      'PORT SCAN · SUPERFÍCIE DE REDE',
+      'Varredura TCP concorrente e banner grabbing para identificar serviços expostos e versões visíveis.',
+      'red',
+    );
+
+    const head = ['SEV.', 'ORIGEM', 'PORTA', 'SERVIÇO', 'BANNER'];
+    const rows = openPorts.map((portInfo) => [
+      chalk.bgRed.white('LOW'),
+      chalk.bgRed.white('RED · PORT'),
+      `${portInfo.port}/tcp`,
+      portInfo.service,
+      portInfo.banner || 'N/A',
     ]);
-
-    if (confirmPdf) {
-      // Marca como risco portas que não são HTTP/HTTPS básico
-      const riskyPorts = new Set([21, 23, 25, 3306, 5432, 27017, 6379, 9200, 8888, 4444]);
-
-      const portFindings: Finding[] = openPorts
-        .filter((p) => riskyPorts.has(p.port) || (p.banner && p.banner !== 'N/A'))
-        .map((p) => ({
-          type: `Porta ${p.port}/tcp aberta — ${p.service}`,
-          evidence: p.banner && p.banner !== 'N/A'
-            ? `Banner capturado: "${p.banner}". Verifique se este serviço deve estar exposto e se a versão está atualizada.`
-            : `Serviço ${p.service} identificado na porta ${p.port}. Avalie a necessidade de exposição pública e aplique restrição por firewall.`,
-          severity: riskyPorts.has(p.port) ? 'HIGH' : 'MEDIUM',
-          team: 'RED' as const,
-          category: 'portscan' as const,
-        }));
-
-      const meta: ScanMeta = {
-        portsScanned: end - start + 1,
-        duration,
-        openPorts: openPorts.map((p) => ({
-          port: p.port,
-          service: p.service,
-          version: p.banner && p.banner !== 'N/A' ? p.banner.substring(0, 60) : undefined,
-        })),
-      };
-
-      const portScore = Math.max(0, 100 - portFindings.length * 5);
-      const filePath = await this.reportService.generatePdf(host, portScore, portFindings, meta);
-      this.logger.success(`Relatório de rede salvo em: ${filePath}`);
-    }
+    console.log(this.formatter.formatTable(head, rows, 'red'));
   }
 
   private async runWebScan() {
     const { url } = await this.prompt([
       { type: 'input', name: 'url', message: 'URL:' },
     ]);
+
     this.lastTargetUrl = url;
 
     const scanResult = await this.webscanService.execute(url);
-    this.lastDiscoveredEndpoints = scanResult.endpoints;
+    this.lastDiscoveredEndpoints = scanResult.discoveredEndpoints ?? scanResult.endpoints;
+    this.lastAnalyzedEndpoints = scanResult.analyzedEndpoints ?? [];
+    this.lastEndpointDetails = scanResult.endpointDetails ?? [];
 
-    this.lastWebFindings = scanResult.findings.map((f: any) => ({
-      type: f.type ?? 'Vulnerability',
-      evidence: f.evidence ?? f.description ?? String(f),
-      severity: (['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'].includes(f.severity)
-        ? f.severity
+    this.lastWebFindings = scanResult.vulnerabilities.map((finding: any) => ({
+      type: finding.type ?? 'Vulnerability',
+      evidence: finding.evidence ?? finding.description ?? String(finding),
+      severity: (['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'].includes(finding.severity)
+        ? finding.severity
         : 'MEDIUM') as Finding['severity'],
-      team: 'RED' as const,
-      category: 'webscan' as const,
+      team: 'RED',
+      category: (finding.category ?? 'webscan') as Finding['category'],
     }));
 
-    await this.scanRepository.createFullScan(url, 0, 'WEB_SCAN', this.lastWebFindings);
+    await this.scanRepository.createFullScan(url, 0, 'WEB_SCAN', this.lastWebFindings, {
+      endpointsAnalyzed: this.lastAnalyzedEndpoints.length,
+      endpointsDiscovered: this.lastDiscoveredEndpoints.length,
+      endpointsScanned: this.lastAnalyzedEndpoints.length,
+      endpointDetails: this.lastEndpointDetails,
+    });
+
+    this.printSectionHeader(
+      'WEB SCAN · ACHADOS DA SUPERFÍCIE',
+      'Vulnerabilidades identificadas na superfície web, incluindo sinais de execução e exposição de conteúdo.',
+      'red',
+    );
 
     if (this.lastWebFindings.length > 0) {
-      const head = ['SEVERIDADE', 'AMEAÇA / CVE', 'EVIDÊNCIA'];
+      const head = ['SEV.', 'ORIGEM', 'ACHADO', 'EVIDÊNCIA'];
       const rows = this.lastWebFindings.map((f) => [
-        f.severity === 'CRITICAL'
-          ? chalk.bgRed.white(f.severity)
-          : f.severity === 'HIGH'
-            ? chalk.red(f.severity)
-            : f.severity === 'MEDIUM'
-              ? chalk.yellow(f.severity)
-              : chalk.gray(f.severity),
+        this.renderFindingSeverity(f.severity),
+        this.renderFindingOrigin(f),
         f.type,
         this.formatter.truncate(f.evidence, 80),
       ]);
+
       console.log('\n');
       console.log(this.formatter.formatTable(head, rows, 'red'));
     } else {
@@ -209,24 +222,34 @@ export class CliService {
     const { url } = await this.prompt([
       { type: 'input', name: 'url', message: 'URL:' },
     ]);
+
     const techs = await this.fingerprintService.identify(url);
 
     const findings: Finding[] = techs.map((t) => ({
       type: 'Tecnologia Detectada',
       evidence: `${t.name} (${t.category})${t.isRisk ? ' — Tecnologia com histórico de vulnerabilidades.' : ''}`,
-      team: 'BLUE' as const,
-      severity: t.isRisk ? 'MEDIUM' : 'LOW',
-      category: 'webscan' as const,
+      team: 'BLUE',
+      severity: (t.isRisk ? 'MEDIUM' : 'LOW') as Finding['severity'],
+      category: 'webscan',
     }));
 
     await this.scanRepository.createFullScan(url, 0, 'FINGERPRINT', findings);
 
-    const head = ['TECNOLOGIA', 'CATEGORIA', 'RISCO'];
+    this.printSectionHeader(
+      'FINGERPRINT · STACK TECNOLÓGICA',
+      'Identificação de tecnologias expostas e sinais de risco observados na superfície HTTP.',
+      'blue',
+    );
+
+    const head = ['SEV.', 'ORIGEM', 'TECNOLOGIA', 'CATEGORIA', 'RISCO'];
     const rows = techs.map((t) => [
+      t.isRisk ? chalk.yellow('MEDIUM') : chalk.gray('LOW'),
+      chalk.bgBlue.white('BLUE · WEB'),
       t.name,
       t.category,
       t.isRisk ? chalk.red('SIM') : chalk.green('NÃO'),
     ]);
+
     console.log(this.formatter.formatTable(head, rows, 'blue'));
   }
 
@@ -234,16 +257,17 @@ export class CliService {
     const { url } = await this.prompt([
       { type: 'input', name: 'url', message: 'URL:' },
     ]);
+
     const result = await this.authService.auditAuthentication(url);
 
-    const findings: Finding[] = [
+    const authFindings: Finding[] = [
       {
         type: 'HTTPS',
         evidence: result.audit.hasHttps
           ? 'Conexão encriptada via TLS detectada.'
           : 'Site acessível via HTTP sem redirecionamento para HTTPS. Tráfego suscetível a interceptação (MitM).',
         team: 'BLUE',
-        severity: result.audit.hasHttps ? 'LOW' : 'HIGH',
+        severity: (result.audit.hasHttps ? 'LOW' : 'HIGH') as Finding['severity'],
         category: 'webscan',
       },
       {
@@ -252,7 +276,7 @@ export class CliService {
           ? 'Token anti-CSRF presente nos formulários.'
           : 'Nenhum token CSRF identificado. Formulários podem ser vulneráveis a Cross-Site Request Forgery.',
         team: 'BLUE',
-        severity: result.audit.hasCsrfToken ? 'LOW' : 'MEDIUM',
+        severity: (result.audit.hasCsrfToken ? 'LOW' : 'MEDIUM') as Finding['severity'],
         category: 'webscan',
       },
       {
@@ -261,20 +285,47 @@ export class CliService {
           ? 'Flag HttpOnly presente nos cookies de sessão.'
           : 'Cookies de sessão sem flag HttpOnly. Suscetíveis a roubo via XSS.',
         team: 'BLUE',
-        severity: result.audit.cookieSecurity.httpOnly ? 'LOW' : 'HIGH',
+        severity: (result.audit.cookieSecurity.httpOnly ? 'LOW' : 'HIGH') as Finding['severity'],
         category: 'webscan',
       },
     ];
 
-    await this.scanRepository.createFullScan(url, 0, 'AUTH_AUDIT', findings);
+    await this.scanRepository.createFullScan(url, 0, 'AUTH_AUDIT', authFindings);
 
-    const head = ['MÉTRICA', 'STATUS'];
+    this.printSectionHeader(
+      'AUTH AUDIT · CONTROLES DE AUTENTICAÇÃO',
+      'Verificação de HTTPS, proteção CSRF e flags de segurança dos cookies de sessão.',
+      'blue',
+    );
+
+    const head = ['SEV.', 'ORIGEM', 'MÉTRICA', 'STATUS'];
     const rows = [
-      ['HTTPS',    result.audit.hasHttps                  ? chalk.green('OK') : chalk.red('FALHA')],
-      ['CSRF',     result.audit.hasCsrfToken              ? chalk.green('OK') : chalk.red('AUSENTE')],
-      ['HttpOnly', result.audit.cookieSecurity.httpOnly   ? chalk.green('OK') : chalk.red('RISCO')],
-      ['Secure',   result.audit.cookieSecurity.secure     ? chalk.green('OK') : chalk.red('RISCO')],
+      [
+        this.renderFindingSeverity(result.audit.hasHttps ? 'LOW' : 'HIGH'),
+        chalk.bgBlue.white('BLUE · WEB'),
+        'HTTPS',
+        result.audit.hasHttps ? chalk.green('OK') : chalk.red('FALHA'),
+      ],
+      [
+        this.renderFindingSeverity(result.audit.hasCsrfToken ? 'LOW' : 'MEDIUM'),
+        chalk.bgBlue.white('BLUE · WEB'),
+        'CSRF',
+        result.audit.hasCsrfToken ? chalk.green('OK') : chalk.red('AUSENTE'),
+      ],
+      [
+        this.renderFindingSeverity(result.audit.cookieSecurity.httpOnly ? 'LOW' : 'HIGH'),
+        chalk.bgBlue.white('BLUE · WEB'),
+        'HttpOnly',
+        result.audit.cookieSecurity.httpOnly ? chalk.green('OK') : chalk.red('RISCO'),
+      ],
+      [
+        this.renderFindingSeverity(result.audit.cookieSecurity.secure ? 'LOW' : 'MEDIUM'),
+        chalk.bgBlue.white('BLUE · WEB'),
+        'Secure',
+        result.audit.cookieSecurity.secure ? chalk.green('OK') : chalk.red('RISCO'),
+      ],
     ];
+
     console.log(this.formatter.formatTable(head, rows, 'blue'));
   }
 
@@ -293,21 +344,28 @@ export class CliService {
     const allFindings: Finding[] = [
       ...result.findings,
       ...this.lastWebFindings,
+      ...this.lastPortFindings,
     ];
+
+    const scoredResult = await this.scoreService.calculateGlobalScore(url, allFindings);
 
     const savedScan = await this.scanRepository.createFullScan(
       url,
-      result.score,
+      scoredResult.score,
       'FULL_SCORE',
       allFindings,
+      {
+        endpointsAnalyzed: this.lastAnalyzedEndpoints.length,
+        endpointsDiscovered: this.lastDiscoveredEndpoints.length,
+        endpointsScanned: this.lastAnalyzedEndpoints.length,
+        endpointDetails: this.lastEndpointDetails,
+      },
     );
 
-    console.log(chalk.bold(`\nSCORE: ${result.score}/100\n`));
+    console.log(chalk.bold(`\nSCORE: ${savedScan.score}/100\n`));
 
-    const head = ['ASPECTO', 'STATUS', 'SEV.'];
-    const rows = (result.details as ScoreDetail[]).map((d) => [
-      d.aspect,
-      d.status,
+    const head = ['SEV.', 'ORIGEM', 'ASPECTO', 'STATUS'];
+    const rows = (scoredResult.details as ScoreDetail[]).map((d) => [
       d.passed
         ? chalk.green('OK')
         : d.severity === 'CRITICAL'
@@ -315,8 +373,39 @@ export class CliService {
           : d.severity === 'HIGH'
             ? chalk.red(d.severity)
             : chalk.yellow(d.severity),
+      d.aspect.startsWith('CVE') || d.aspect === 'HTTPS' || d.aspect === 'CSRF Token' || d.aspect === 'Cookie HttpOnly' || d.aspect === 'Cookie Secure'
+        ? chalk.bgBlue.white('BLUE · WEB')
+        : chalk.bgRed.white('RED · WEB'),
+      d.aspect,
+      d.status,
     ]);
     console.log(this.formatter.formatTable(head, rows, 'blue'));
+
+    if (allFindings.length > 0) {
+      const findingsHead = ['SEV.', 'ORIGEM', 'TIPO', 'EVIDÊNCIA'];
+      const findingsRows = allFindings.map((finding) => [
+        this.renderFindingSeverity(finding.severity),
+        this.renderFindingOrigin(finding),
+        finding.type,
+        this.formatter.truncate(finding.evidence, 80),
+      ]);
+
+      console.log('\n');
+      console.log(this.formatter.formatTable(findingsHead, findingsRows, 'blue'));
+    }
+
+    if (scoredResult.scoreBreakdown) {
+      const breakdownHead = ['BLOCO', 'IMPACTO'];
+      const breakdownRows = [
+        ['Headers', String(scoredResult.scoreBreakdown.headers)],
+        ['Auth', String(scoredResult.scoreBreakdown.auth)],
+        ['CVEs', String(scoredResult.scoreBreakdown.cves)],
+        ['Findings', String(scoredResult.scoreBreakdown.findings)],
+      ];
+
+      console.log('\n');
+      console.log(this.formatter.formatTable(breakdownHead, breakdownRows, 'blue'));
+    }
 
     const { confirmPdf } = await this.prompt([
       {
@@ -329,15 +418,19 @@ export class CliService {
 
     if (confirmPdf) {
       const meta: ScanMeta = {
-        endpointsScanned: this.lastDiscoveredEndpoints.length,
-        headersAnalyzed: result.details.length,
+        endpointsAnalyzed: this.lastAnalyzedEndpoints.length,
+        endpointsDiscovered: this.lastDiscoveredEndpoints.length,
+        endpointsScanned: this.lastAnalyzedEndpoints.length,
+        headersAnalyzed: scoredResult.details.length,
+        endpointDetails: this.lastEndpointDetails,
       };
 
       const filePath = await this.reportService.generatePdf(
         url,
-        savedScan.score ?? result.score,
+        savedScan.score,
         allFindings,
         meta,
+        savedScan.id,
       );
       this.logger.success(`Relatório salvo em: ${filePath}`);
     }

@@ -7,6 +7,7 @@ export interface TechProfile {
   category: 'CMS' | 'Framework' | 'Server' | 'Language' | 'Security';
   version?: string;
   isRisk?: boolean;
+  evidence?: string;
 }
 
 @Injectable()
@@ -29,10 +30,9 @@ export class FingerprintService {
 
   async identify(url: string): Promise<TechProfile[]> {
     const detected: TechProfile[] = [];
+    const page = await this.browser.newPage();
     
     try {
-      const page = await this.browser.newPage();
-      
       let mainResponseHeaders: Record<string, string> = {};
 
       page.on('response', (response) => {
@@ -51,11 +51,12 @@ export class FingerprintService {
       this.analyzeSignatures(html, detected);
       this.auditSecurityHeaders(mainResponseHeaders, detected);
 
-      await page.close();
       return this.deduplicate(detected);
     } catch (error) {
       this.logger.error(`Falha no fingerprint de ${url}`, error);
       return [];
+    } finally {
+      await page.close();
     }
   }
 
@@ -64,7 +65,8 @@ export class FingerprintService {
       detected.push({ 
         name: headers['server'], 
         category: 'Server', 
-        isRisk: /\d/.test(headers['server']) 
+        isRisk: /\d/.test(headers['server']),
+        evidence: `Header Server exposto: ${headers['server']}`,
       });
     }
 
@@ -72,7 +74,8 @@ export class FingerprintService {
       detected.push({ 
         name: headers['x-powered-by'], 
         category: 'Language', 
-        isRisk: true 
+        isRisk: true,
+        evidence: `Header X-Powered-By exposto: ${headers['x-powered-by']}`,
       });
     }
   }
@@ -82,7 +85,8 @@ export class FingerprintService {
       if (sig.pattern.test(html)) {
         detected.push({ 
           name: sig.name, 
-          category: sig.category as any 
+          category: sig.category as TechProfile['category'],
+          evidence: `Assinatura HTML detectada para ${sig.name}`,
         });
       }
     }
@@ -101,7 +105,8 @@ export class FingerprintService {
         detected.push({ 
           name: `Missing ${h.toUpperCase()}`, 
           category: 'Security', 
-          isRisk: true 
+          isRisk: true,
+          evidence: `Header ausente: ${h}`,
         });
       }
     });
