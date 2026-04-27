@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import chalk from 'chalk';
-import inquirer from 'inquirer';
+import * as inquirer from 'inquirer';
 import { FormatterService } from '../core/formatter/formatter.service';
 import { ScanRepository } from '../infrastructure/database/repository/scan.repository';
 import { LoggerService } from '../infrastructure/logger/logger.service';
