@@ -8,10 +8,14 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    environment: production
 
     strategy:
       matrix:
         node-version: [20, 22]
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
 
     steps:
       - name: Checkout
