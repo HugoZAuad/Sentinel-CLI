@@ -18,9 +18,9 @@ export class ScanRepository {
         endpointsAnalyzed: meta?.endpointsAnalyzed ?? meta?.endpointsScanned,
         endpointsDiscovered: meta?.endpointsDiscovered,
         headersAnalyzed: meta?.headersAnalyzed,
-        endpointDetails: meta?.endpointDetails
+        endpointDetails: meta?.endpointDetails 
           ? (JSON.parse(JSON.stringify(meta.endpointDetails)) as Prisma.InputJsonValue)
-          : undefined,
+          : Prisma.JsonNull,
         findings: {
           create: findings.map(f => ({
             type: f.type,
