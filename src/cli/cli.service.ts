@@ -4,8 +4,8 @@ import * as inquirer from 'inquirer';
 import { FormatterService } from '../core/formatter/formatter.service';
 import { ScanRepository } from '../infrastructure/database/repository/scan.repository';
 import { LoggerService } from '../infrastructure/logger/logger.service';
-import { ReportService } from '../infrastructure/report/report.service';
-import { SecurityScoreService } from '../modules/blue/score/security-score.service';
+import { Finding, ReportService, ScanMeta } from '../infrastructure/report/report.service';
+import { ScoreDetail, SecurityScoreService } from '../modules/blue/score/security-score.service';
 import { AuthService } from '../modules/blue/web/auth/auth.service';
 import { FingerprintService } from '../modules/blue/web/fingerprint/fingerprint.service';
 import { PortscanService } from '../modules/red/network/portscan/portscan.service';
@@ -14,7 +14,8 @@ import { WebscanService } from '../modules/red/web/webscan/webscan.service';
 @Injectable()
 export class CliService {
   private prompt = inquirer.createPromptModule();
-  private lastWebFindings: any[] = [];
+  private lastWebFindings: Finding[] = [];
+  private lastDiscoveredEndpoints: string[] = [];
   private lastTargetUrl: string = '';
 
   constructor(
@@ -109,14 +110,11 @@ export class CliService {
     ]);
 
     const [start, end] = range.split('-').map(Number);
+    const scanStart = Date.now();
     const openPorts = await this.portscanService.scanRange(host, start, end);
+    const duration = `${((Date.now() - scanStart) / 1000).toFixed(1)}s`;
 
-    const savedScan = await this.scanRepository.createNetworkScan(
-      host,
-      start,
-      end,
-      openPorts,
-    );
+    await this.scanRepository.createNetworkScan(host, start, end, openPorts);
 
     console.log('\n');
     const head = ['PORTA', 'SERVIÇO', 'BANNER'];
@@ -133,12 +131,34 @@ export class CliService {
     ]);
 
     if (confirmPdf) {
-      const path = await this.reportService.generatePdf(
-        savedScan,
-        `network_scan_${savedScan.id}`,
-        'NETWORK',
-      );
-      this.logger.success(`Relatório de rede salvo em: ${path}`);
+      // Marca como risco portas que não são HTTP/HTTPS básico
+      const riskyPorts = new Set([21, 23, 25, 3306, 5432, 27017, 6379, 9200, 8888, 4444]);
+
+      const portFindings: Finding[] = openPorts
+        .filter((p) => riskyPorts.has(p.port) || (p.banner && p.banner !== 'N/A'))
+        .map((p) => ({
+          type: `Porta ${p.port}/tcp aberta — ${p.service}`,
+          evidence: p.banner && p.banner !== 'N/A'
+            ? `Banner capturado: "${p.banner}". Verifique se este serviço deve estar exposto e se a versão está atualizada.`
+            : `Serviço ${p.service} identificado na porta ${p.port}. Avalie a necessidade de exposição pública e aplique restrição por firewall.`,
+          severity: riskyPorts.has(p.port) ? 'HIGH' : 'MEDIUM',
+          team: 'RED' as const,
+          category: 'portscan' as const,
+        }));
+
+      const meta: ScanMeta = {
+        portsScanned: end - start + 1,
+        duration,
+        openPorts: openPorts.map((p) => ({
+          port: p.port,
+          service: p.service,
+          version: p.banner && p.banner !== 'N/A' ? p.banner.substring(0, 60) : undefined,
+        })),
+      };
+
+      const portScore = Math.max(0, 100 - portFindings.length * 5);
+      const filePath = await this.reportService.generatePdf(host, portScore, portFindings, meta);
+      this.logger.success(`Relatório de rede salvo em: ${filePath}`);
     }
   }
 
@@ -147,16 +167,42 @@ export class CliService {
       { type: 'input', name: 'url', message: 'URL:' },
     ]);
     this.lastTargetUrl = url;
-    const results = await this.webscanService.execute(url);
-    this.lastWebFindings = results.map((f) => ({ ...f, team: 'RED' }));
 
-    await this.scanRepository.createFullScan(
-      url,
-      0,
-      'WEB_SCAN',
-      this.lastWebFindings,
-    );
-    this.logger.success(`Webscan concluído para ${url}`);
+    const scanResult = await this.webscanService.execute(url);
+    this.lastDiscoveredEndpoints = scanResult.endpoints;
+
+    this.lastWebFindings = scanResult.findings.map((f: any) => ({
+      type: f.type ?? 'Vulnerability',
+      evidence: f.evidence ?? f.description ?? String(f),
+      severity: (['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'].includes(f.severity)
+        ? f.severity
+        : 'MEDIUM') as Finding['severity'],
+      team: 'RED' as const,
+      category: 'webscan' as const,
+    }));
+
+    await this.scanRepository.createFullScan(url, 0, 'WEB_SCAN', this.lastWebFindings);
+
+    if (this.lastWebFindings.length > 0) {
+      const head = ['SEVERIDADE', 'AMEAÇA / CVE', 'EVIDÊNCIA'];
+      const rows = this.lastWebFindings.map((f) => [
+        f.severity === 'CRITICAL'
+          ? chalk.bgRed.white(f.severity)
+          : f.severity === 'HIGH'
+            ? chalk.red(f.severity)
+            : f.severity === 'MEDIUM'
+              ? chalk.yellow(f.severity)
+              : chalk.gray(f.severity),
+        f.type,
+        this.formatter.truncate(f.evidence, 80),
+      ]);
+      console.log('\n');
+      console.log(this.formatter.formatTable(head, rows, 'red'));
+    } else {
+      console.log(chalk.green('\n✔ Nenhuma vulnerabilidade identificada no web scan.\n'));
+    }
+
+    this.logger.success(`Webscan concluído para ${url} — ${this.lastWebFindings.length} achado(s).`);
   }
 
   private async runFingerprintScan() {
@@ -165,11 +211,12 @@ export class CliService {
     ]);
     const techs = await this.fingerprintService.identify(url);
 
-    const findings = techs.map((t) => ({
-      type: 'Tecnologia',
-      evidence: t.name,
-      team: 'BLUE',
-      severity: 'INFO',
+    const findings: Finding[] = techs.map((t) => ({
+      type: 'Tecnologia Detectada',
+      evidence: `${t.name} (${t.category})${t.isRisk ? ' — Tecnologia com histórico de vulnerabilidades.' : ''}`,
+      team: 'BLUE' as const,
+      severity: t.isRisk ? 'MEDIUM' : 'LOW',
+      category: 'webscan' as const,
     }));
 
     await this.scanRepository.createFullScan(url, 0, 'FINGERPRINT', findings);
@@ -189,18 +236,33 @@ export class CliService {
     ]);
     const result = await this.authService.auditAuthentication(url);
 
-    const findings = [
+    const findings: Finding[] = [
       {
         type: 'HTTPS',
-        evidence: result.audit.hasHttps ? 'OK' : 'FALHA',
+        evidence: result.audit.hasHttps
+          ? 'Conexão encriptada via TLS detectada.'
+          : 'Site acessível via HTTP sem redirecionamento para HTTPS. Tráfego suscetível a interceptação (MitM).',
         team: 'BLUE',
         severity: result.audit.hasHttps ? 'LOW' : 'HIGH',
+        category: 'webscan',
       },
       {
-        type: 'CSRF',
-        evidence: result.audit.hasCsrfToken ? 'OK' : 'FALHA',
+        type: 'CSRF Token',
+        evidence: result.audit.hasCsrfToken
+          ? 'Token anti-CSRF presente nos formulários.'
+          : 'Nenhum token CSRF identificado. Formulários podem ser vulneráveis a Cross-Site Request Forgery.',
         team: 'BLUE',
         severity: result.audit.hasCsrfToken ? 'LOW' : 'MEDIUM',
+        category: 'webscan',
+      },
+      {
+        type: 'Cookie HttpOnly',
+        evidence: result.audit.cookieSecurity.httpOnly
+          ? 'Flag HttpOnly presente nos cookies de sessão.'
+          : 'Cookies de sessão sem flag HttpOnly. Suscetíveis a roubo via XSS.',
+        team: 'BLUE',
+        severity: result.audit.cookieSecurity.httpOnly ? 'LOW' : 'HIGH',
+        category: 'webscan',
       },
     ];
 
@@ -208,9 +270,10 @@ export class CliService {
 
     const head = ['MÉTRICA', 'STATUS'];
     const rows = [
-      ['HTTPS', result.audit.hasHttps ? 'OK' : 'FALHA'],
-      ['CSRF', result.audit.hasCsrfToken ? 'OK' : 'AUSENTE'],
-      ['HttpOnly', result.audit.cookieSecurity.httpOnly ? 'OK' : 'RISCO'],
+      ['HTTPS',    result.audit.hasHttps                  ? chalk.green('OK') : chalk.red('FALHA')],
+      ['CSRF',     result.audit.hasCsrfToken              ? chalk.green('OK') : chalk.red('AUSENTE')],
+      ['HttpOnly', result.audit.cookieSecurity.httpOnly   ? chalk.green('OK') : chalk.red('RISCO')],
+      ['Secure',   result.audit.cookieSecurity.secure     ? chalk.green('OK') : chalk.red('RISCO')],
     ];
     console.log(this.formatter.formatTable(head, rows, 'blue'));
   }
@@ -226,14 +289,12 @@ export class CliService {
     ]);
 
     const result = await this.scoreService.calculateGlobalScore(url);
-    const blueFindings = result.details.map((d) => ({
-      type: d.aspect,
-      evidence: d.status,
-      team: 'BLUE',
-      severity: 'MEDIUM',
-    }));
 
-    const allFindings = [...blueFindings, ...this.lastWebFindings];
+    const allFindings: Finding[] = [
+      ...result.findings,
+      ...this.lastWebFindings,
+    ];
+
     const savedScan = await this.scanRepository.createFullScan(
       url,
       result.score,
@@ -241,10 +302,20 @@ export class CliService {
       allFindings,
     );
 
-    console.log(chalk.bold(`\nSCORE: ${savedScan.score}/100\n`));
+    console.log(chalk.bold(`\nSCORE: ${result.score}/100\n`));
 
-    const head = ['ASPECTO', 'STATUS'];
-    const rows = result.details.map((d) => [d.aspect, d.status]);
+    const head = ['ASPECTO', 'STATUS', 'SEV.'];
+    const rows = (result.details as ScoreDetail[]).map((d) => [
+      d.aspect,
+      d.status,
+      d.passed
+        ? chalk.green('OK')
+        : d.severity === 'CRITICAL'
+          ? chalk.bgRed.white(d.severity)
+          : d.severity === 'HIGH'
+            ? chalk.red(d.severity)
+            : chalk.yellow(d.severity),
+    ]);
     console.log(this.formatter.formatTable(head, rows, 'blue'));
 
     const { confirmPdf } = await this.prompt([
@@ -257,11 +328,18 @@ export class CliService {
     ]);
 
     if (confirmPdf) {
-      const path = await this.reportService.generatePdf(
-        savedScan,
-        `sentinel_${savedScan.id}`,
+      const meta: ScanMeta = {
+        endpointsScanned: this.lastDiscoveredEndpoints.length,
+        headersAnalyzed: result.details.length,
+      };
+
+      const filePath = await this.reportService.generatePdf(
+        url,
+        savedScan.score ?? result.score,
+        allFindings,
+        meta,
       );
-      this.logger.success(`Relatório salvo em: ${path}`);
+      this.logger.success(`Relatório salvo em: ${filePath}`);
     }
   }
 }
