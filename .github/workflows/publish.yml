@@ -1,21 +1,15 @@
-name: CI
+name: Publish to npm
 
 on:
-  push:
-    branches: [main, master]
-  pull_request:
+  release:
+    types: [published]
 
 jobs:
-  test:
+  publish:
     runs-on: ubuntu-latest
-    environment: production
-
-    strategy:
-      matrix:
-        node-version: [20, 22]
-
-    env:
-      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+    permissions:
+      contents: read
+      id-token: write
 
     steps:
       - name: Checkout
@@ -24,7 +18,8 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.node-version }}
+          node-version: 20
+          registry-url: https://registry.npmjs.org
           cache: npm
 
       - name: Install dependencies
@@ -38,3 +33,8 @@ jobs:
 
       - name: Test
         run: npm test
+
+      - name: Publish package
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
