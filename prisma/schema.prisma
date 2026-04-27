@@ -1,18 +1,50 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
 model Scan {
-  id        String    @id @default(uuid())
-  target    String
-  score     Int
-  mode      String
-  createdAt DateTime  @default(now())
-  findings  Finding[]
+  id                  String    @id @default(uuid())
+  target              String
+  score               Int
+  mode                String
+  createdAt           DateTime  @default(now())
+  duration            String?
+  portsScanned        Int?
+  endpointsAnalyzed   Int?
+  endpointsDiscovered Int?
+  headersAnalyzed     Int?
+  endpointDetails     Json?
+  findings            Finding[]
 }
 
 model Finding {
   id       String @id @default(uuid())
   scanId   String
-  scan     Scan   @relation(fields: [scanId], references: [id])
+  scan     Scan   @relation(fields: [scanId], references: [id], onDelete: Cascade)
   type     String
-  evidence String
+  evidence String @db.Text
   severity String
   team     String
+}
+
+model NetworkScan {
+  id        String        @id @default(uuid())
+  target    String
+  startPort Int
+  endPort   Int
+  createdAt DateTime      @default(now())
+  ports     NetworkPort[]
+}
+
+model NetworkPort {
+  id            String      @id @default(uuid())
+  networkScanId String
+  scan          NetworkScan @relation(fields: [networkScanId], references: [id], onDelete: Cascade)
+  port          Int
+  service       String
+  banner        String      @db.Text
 }

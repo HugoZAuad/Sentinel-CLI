@@ -1,251 +1,149 @@
 import { Injectable } from '@nestjs/common';
 import * as fs from 'fs';
 import * as path from 'path';
-import { BrowserService } from '../../core/browser/browser.service';
+import * as puppeteer from 'puppeteer';
+import { ScanRepository } from '../database/repository/scan.repository';
+import { buildReportHtml } from './report-html.template';
+import { EndpointAnalysisDetail, Finding, ScanMeta } from './report.types';
+
+export type { EndpointAnalysisDetail, Finding, ScanMeta } from './report.types';
 
 @Injectable()
 export class ReportService {
-  constructor(private readonly browserService: BrowserService) {}
+  constructor(private readonly scanRepository: ScanRepository) {}
 
-  async generatePdf(scan: any, fileName: string): Promise<string> {
-    const page = await this.browserService.newPage();
-    try {
-      const html = this.compileTemplate(scan);
-      await page.setContent(html, { waitUntil: 'networkidle0' });
+  async generatePdf(
+    target: string,
+    score: number,
+    findings: Finding[],
+    meta?: ScanMeta,
+    scanId?: string,
+  ): Promise<string> {
+    let resolvedTarget = target;
+    let resolvedScore = score;
+    let resolvedFindings = findings;
 
-      const reportsDir = path.resolve(process.cwd(), 'reports');
-      if (!fs.existsSync(reportsDir)) fs.mkdirSync(reportsDir, { recursive: true });
+    if (scanId) {
+      const storedScan = await this.scanRepository.findFullScanById(scanId);
 
-      const filePath = path.join(reportsDir, `${fileName}.pdf`);
-      await page.pdf({
-        path: filePath,
-        format: 'A4',
-        printBackground: true,
-        margin: { top: '15mm', bottom: '15mm', left: '15mm', right: '15mm' }
-      });
+      if (storedScan) {
+        resolvedTarget = storedScan.target;
+        resolvedScore = storedScan.score;
+        resolvedFindings = storedScan.findings.map((finding) => ({
+          type: finding.type,
+          evidence: finding.evidence,
+          severity: finding.severity as Finding['severity'],
+          team: finding.team as Finding['team'],
+        }));
 
-      return filePath;
-    } finally {
-      await page.close();
+        meta = meta ?? {};
+        meta.duration = storedScan.duration ?? meta.duration;
+        meta.portsScanned = storedScan.portsScanned ?? meta.portsScanned;
+        meta.endpointsAnalyzed = storedScan.endpointsAnalyzed ?? meta.endpointsAnalyzed;
+        meta.endpointsDiscovered = storedScan.endpointsDiscovered ?? meta.endpointsDiscovered;
+        meta.headersAnalyzed = storedScan.headersAnalyzed ?? meta.headersAnalyzed;
+
+        if (Array.isArray(storedScan.endpointDetails)) {
+          meta.endpointDetails = storedScan.endpointDetails as unknown as EndpointAnalysisDetail[];
+        }
+      }
     }
-  }
 
-  private compileTemplate(scan: any): string {
-    const redFindings = scan.findings.filter(f => f.team === 'RED');
-    const blueFindings = scan.findings.filter(f => f.team === 'BLUE');
-    const date = new Date(scan.createdAt || Date.now()).toLocaleDateString('pt-BR');
+    const redFindings = resolvedFindings.filter((f) => f.team === 'RED');
+    const blueFindings = resolvedFindings.filter((f) => f.team === 'BLUE');
 
-    return `
-      <!DOCTYPE html>
-      <html lang="pt-BR">
-      <head>
-        <meta charset="UTF-8">
-        <style>
-          :root {
-            --primary: #0f172a;
-            --secondary: #334155;
-            --accent: #3b82f6;
-            --danger: #ef4444;
-            --success: #10b981;
-            --warning: #f59e0b;
-            --gray-light: #f8fafc;
-            --border: #e2e8f0;
-          }
-          
-          body { 
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
-            line-height: 1.6; 
-            color: var(--primary); 
-            margin: 0;
-            padding: 0;
-          }
+    const redWeb = redFindings.filter((f) => f.category === 'webscan');
+    const redPort = redFindings.filter((f) => f.category === 'portscan');
+    const blueWeb = blueFindings.filter((f) => f.category === 'webscan');
+    const bluePort = blueFindings.filter((f) => f.category === 'portscan');
 
-          .header { 
-            background-color: var(--primary); 
-            color: white; 
-            padding: 40px; 
-            text-align: center;
-            border-radius: 0 0 20px 20px;
-          }
+    const redWebFallback = redWeb.length === 0 && redPort.length === 0 ? redFindings : redWeb;
+    const blueWebFallback = blueWeb.length === 0 && bluePort.length === 0 ? blueFindings : blueWeb;
 
-          .header h1 { margin: 0; font-size: 28px; letter-spacing: 2px; }
-          .header p { margin: 10px 0 0; opacity: 0.8; }
+    const scoreColor = resolvedScore >= 80 ? '#00c896' : resolvedScore >= 50 ? '#f5a623' : '#e8394a';
+    const scoreLabel = resolvedScore >= 80 ? 'SEGURO' : resolvedScore >= 50 ? 'ATENÇÃO' : 'CRÍTICO';
+    const scoreBg =
+      resolvedScore >= 80 ? 'rgba(0,200,150,0.08)' : resolvedScore >= 50 ? 'rgba(245,166,35,0.08)' : 'rgba(232,57,74,0.08)';
 
-          .container { padding: 30px; }
+    const severityPoints: Record<Finding['severity'], number> = {
+      LOW: 2,
+      MEDIUM: 5,
+      HIGH: 10,
+      CRITICAL: 20,
+    };
 
-          .summary-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
-            margin-bottom: 30px;
-          }
+    const categoryWeight: Record<NonNullable<Finding['category']>, number> = {
+      webscan: 1.15,
+      portscan: 0.4,
+    };
 
-          .card {
-            background: var(--gray-light);
-            padding: 20px;
-            border-radius: 8px;
-            border: 1px solid var(--border);
-          }
+    const findingImpact = (finding: Finding): number => {
+      const basePoints = severityPoints[finding.severity];
+      const weight = categoryWeight[finding.category ?? 'webscan'] ?? 1;
+      return Math.max(1, Math.round(basePoints * weight));
+    };
 
-          .score-big {
-            font-size: 54px;
-            font-weight: bold;
-            color: var(--accent);
-            text-align: center;
-            display: block;
-          }
+    const totalCritical = resolvedFindings.filter((f) => f.severity === 'CRITICAL').length;
+    const totalHigh     = resolvedFindings.filter((f) => f.severity === 'HIGH').length;
+    const totalMedium   = resolvedFindings.filter((f) => f.severity === 'MEDIUM').length;
+    const totalLow      = resolvedFindings.filter((f) => f.severity === 'LOW').length;
+    const maxBar        = Math.max(totalCritical, totalHigh, totalMedium, totalLow, 1);
+    const totalFindings = resolvedFindings.length;
+    const totalRed = redFindings.length;
+    const totalBlue = blueFindings.length;
+    const redShare = totalFindings > 0 ? Math.round((totalRed / totalFindings) * 100) : 0;
+    const blueShare = totalFindings > 0 ? 100 - redShare : 0;
+    const scoreImpact = resolvedFindings.reduce((total, finding) => total + findingImpact(finding), 0);
+    const residualRisk = Math.max(0, 100 - resolvedScore);
 
-          h2 { 
-            border-left: 5px solid var(--accent); 
-            padding-left: 15px; 
-            color: var(--primary);
-            font-size: 20px;
-            margin-top: 40px;
-            text-transform: uppercase;
-          }
+    const reportsDir = path.join(process.cwd(), 'reports');
+    if (!fs.existsSync(reportsDir)) {
+      fs.mkdirSync(reportsDir, { recursive: true });
+    }
 
-          table { 
-            width: 100%; 
-            border-collapse: collapse; 
-            margin-top: 15px; 
-            background: white;
-          }
+    const fileName = `sentinel-report-${resolvedTarget.replace(/[^a-zA-Z0-9]/g, '_')}_${Date.now()}.pdf`;
+    const filePath = path.join(reportsDir, fileName);
 
-          th { 
-            background: var(--secondary); 
-            color: white; 
-            text-align: left; 
-            padding: 12px; 
-            font-size: 14px;
-          }
+    const browser = await puppeteer.launch({
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+    });
+    const page = await browser.newPage();
+    const htmlContent = buildReportHtml({
+      target: resolvedTarget,
+      score: resolvedScore,
+      findings: resolvedFindings,
+      meta,
+      scoreLabel,
+      scoreColor,
+      scoreBg,
+      totalCritical,
+      totalHigh,
+      totalMedium,
+      totalLow,
+      maxBar,
+      totalFindings,
+      totalRed,
+      totalBlue,
+      redShare,
+      blueShare,
+      scoreImpact,
+      residualRisk,
+      redWebFallback,
+      redPort,
+      blueWebFallback,
+      bluePort,
+    });
 
-          td { 
-            padding: 12px; 
-            border: 1px solid var(--border); 
-            font-size: 13px; 
-          }
+    await page.setContent(htmlContent, { waitUntil: 'networkidle0' });
+    await page.pdf({
+      path: filePath,
+      format: 'A4',
+      printBackground: true,
+      margin: { top: '0', bottom: '0', left: '0', right: '0' },
+    });
+    await browser.close();
 
-          .severity-badge {
-            padding: 4px 8px;
-            border-radius: 4px;
-            font-weight: bold;
-            font-size: 11px;
-            text-transform: uppercase;
-          }
-
-          .critical { background: #fee2e2; color: #991b1b; }
-          .high { background: #ffedd5; color: #9a3412; }
-          .medium { background: #fef9c3; color: #854d0e; }
-          .low { background: #dcfce7; color: #166534; }
-
-          .footer {
-            margin-top: 50px;
-            font-size: 11px;
-            color: #94a3b8;
-            text-align: center;
-            border-top: 1px solid var(--border);
-            padding-top: 20px;
-          }
-
-          .empty-state {
-            padding: 20px;
-            text-align: center;
-            background: #f1f5f9;
-            color: #64748b;
-            border-radius: 8px;
-            font-style: italic;
-          }
-        </style>
-      </head>
-      <body>
-        <div class="header">
-          <h1>SENTINEL SECURITY AUDIT</h1>
-          <p>Relatório Gerado em: ${date}</p>
-        </div>
-
-        <div class="container">
-          <div class="summary-grid">
-            <div class="card">
-              <strong>ALVO DA ANÁLISE</strong><br>
-              <span style="color: var(--accent)">${scan.target}</span><br><br>
-              <strong>STATUS GLOBAL</strong><br>
-              <span>${scan.score > 70 ? 'CONFORME' : 'RISCO DETECTADO'}</span>
-            </div>
-            <div class="card">
-              <strong>SECURITY SCORE</strong>
-              <span class="score-big">${scan.score}/100</span>
-            </div>
-          </div>
-
-          <h2>1. METODOLOGIA</h2>
-          <p style="font-size: 13px;">
-            A análise foi realizada seguindo padrões OWASP Top 10 e verificações de infraestrutura defensiva. 
-            O processo engloba Port Scanning, Web Application Vulnerability Scanning (DAST) e Auditoria de Cabeçalhos de Segurança.
-          </p>
-
-          <h2>2. ANÁLISE OFENSIVA (RED TEAM)</h2>
-          <p style="font-size: 12px; color: #64748b;">Testes executados: Injeção de SQL (SQLi), Cross-Site Scripting (XSS), Varredura de Portas e Serviços.</p>
-          
-          ${redFindings.length > 0 ? `
-            <table>
-              <thead>
-                <tr>
-                  <th>VULNERABILIDADE / TESTE</th>
-                  <th>EVIDÊNCIA ENCONTRADA</th>
-                  <th>SEVERIDADE</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${redFindings.map(f => `
-                  <tr>
-                    <td>${f.type}</td>
-                    <td><code>${f.evidence}</code></td>
-                    <td><span class="severity-badge ${f.severity?.toLowerCase() || 'medium'}">${f.severity || 'MEDIUM'}</span></td>
-                  </tr>
-                `).join('')}
-              </tbody>
-            </table>
-          ` : `
-            <div class="empty-state">
-              Nenhuma vulnerabilidade crítica foi detectada durante a execução dos testes ofensivos automatizados.
-            </div>
-          `}
-
-          <h2>3. AUDITORIA DEFENSIVA (BLUE TEAM)</h2>
-          <p style="font-size: 12px; color: #64748b;">Análise de conformidade: Certificados SSL/TLS, Políticas de Cookies e Cabeçalhos de Proteção.</p>
-          
-          ${blueFindings.length > 0 ? `
-            <table>
-              <thead>
-                <tr>
-                  <th>CONTROLE DE SEGURANÇA</th>
-                  <th>STATUS DO DIAGNÓSTICO</th>
-                  <th>SEVERIDADE</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${blueFindings.map(f => `
-                  <tr>
-                    <td>${f.type}</td>
-                    <td>${f.evidence}</td>
-                    <td><span class="severity-badge ${f.severity?.toLowerCase() || 'low'}">${f.severity || 'LOW'}</span></td>
-                  </tr>
-                `).join('')}
-              </tbody>
-            </table>
-          ` : `
-            <div class="empty-state">
-              Todos os controles defensivos básicos foram validados e estão operando conforme as melhores práticas.
-            </div>
-          `}
-
-          <div class="footer">
-            Sentinel CLI v1.0.0 - Ferramenta de Auditoria Modular Automatizada<br>
-            Este documento é confidencial e destinado exclusivamente ao proprietário do sistema analisado.
-          </div>
-        </div>
-      </body>
-      </html>
-    `;
+    return filePath;
   }
 }

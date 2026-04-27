@@ -10,7 +10,8 @@ export interface AuthAudit {
   cookieSecurity: {
     httpOnly: boolean;
     secure: boolean;
-    sameSite: string | boolean;
+    sameSite: 'Strict' | 'Lax' | 'None' | 'Unknown';
+    analyzedCookies: number;
   };
 }
 

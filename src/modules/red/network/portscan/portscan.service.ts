@@ -33,7 +33,7 @@ export class PortscanService {
             openPorts.push({
               port,
               service: this.inferService(port),
-              banner: banner
+              banner: banner || 'N/A'
             });
           }
         } finally {
@@ -49,22 +49,21 @@ export class PortscanService {
   private checkPort(host: string, port: number): Promise<boolean> {
     return new Promise((resolve) => {
       const socket = new net.Socket();
+      let isDone = false;
+
+      const finish = (isOpen: boolean) => {
+        if (!isDone) {
+          isDone = true;
+          socket.destroy();
+          resolve(isOpen);
+        }
+      };
+
       socket.setTimeout(300);
-
-      socket.on('connect', () => {
-        socket.destroy();
-        resolve(true);
-      });
-
-      socket.on('timeout', () => {
-        socket.destroy();
-        resolve(false);
-      });
-
-      socket.on('error', () => {
-        socket.destroy();
-        resolve(false);
-      });
+      socket.on('connect', () => finish(true));
+      socket.on('timeout', () => finish(false));
+      socket.on('error', () => finish(false));
+      socket.on('close', () => finish(false));
 
       socket.connect(port, host);
     });
@@ -74,25 +73,34 @@ export class PortscanService {
     return new Promise((resolve) => {
       const socket = new net.Socket();
       let banner = 'N/A';
+      let isDone = false;
+
+      const finish = () => {
+        if (!isDone) {
+          isDone = true;
+          socket.destroy();
+          resolve(banner);
+        }
+      };
 
       socket.setTimeout(500);
-      
+
+      socket.on('connect', () => {
+        if (port === 80 || port === 443) {
+          socket.write(`HEAD / HTTP/1.1\r\nHost: ${host}\r\n\r\n`);
+        }
+      });
+
       socket.on('data', (data) => {
         banner = data.toString().replace(/[\r\n]/g, ' ').trim();
-        socket.destroy();
+        finish();
       });
 
-      socket.on('error', () => resolve('N/A'));
-      socket.on('timeout', () => {
-        socket.destroy();
-        resolve(banner);
-      });
+      socket.on('error', finish);
+      socket.on('timeout', finish);
+      socket.on('close', finish);
 
       socket.connect(port, host);
-      
-      if (port === 80 || port === 443) {
-        socket.write('HEAD / HTTP/1.1\r\nHost: ' + host + '\r\n\r\n');
-      }
     });
   }
 
