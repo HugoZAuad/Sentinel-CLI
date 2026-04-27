@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { Page } from 'puppeteer';
 import { BrowserService } from '../../../../core/browser/browser.service';
 import { LoggerService } from '../../../../infrastructure/logger/logger.service';
 import { AuthAudit, AuthCredentials, AuthResult } from './auth.types';
@@ -15,7 +16,7 @@ export class AuthService {
     
     try {
       this.logger.info(`Auditando segurança de autenticação em: ${url}`);
-      const response = await page.goto(url, { waitUntil: 'networkidle2' });
+      await page.goto(url, { waitUntil: 'networkidle2' });
 
       const cookies = await page.cookies();
       const audit: AuthAudit = {
@@ -36,17 +37,17 @@ export class AuthService {
         loginSuccess = await this.attemptLogin(page, credentials);
       }
 
-      await page.close();
       return { url, success: loginSuccess, audit };
 
     } catch (error) {
       this.logger.error('Erro durante auditoria de Auth', error);
-      await page.close();
       throw error;
+    } finally {
+      await page.close();
     }
   }
 
-  private async checkCsrfPresence(page: any): Promise<boolean> {
+  private async checkCsrfPresence(page: Page): Promise<boolean> {
     return await page.evaluate(() => {
       const inputs = Array.from(document.querySelectorAll('input[type="hidden"]'));
       return inputs.some(input => {
@@ -57,16 +58,22 @@ export class AuthService {
   }
 
   private analyzeCookies(cookies: any[]): AuthAudit['cookieSecurity'] {
-    const sessionCookie = cookies[0] || {};
+    const sessionCookie = cookies.find((cookie) => cookie.httpOnly || cookie.secure) || cookies[0] || {};
+    const sameSiteValue = sessionCookie.sameSite;
+
     return {
-      httpOnly: sessionCookie.httpOnly || false,
-      secure: sessionCookie.secure || false,
-      sameSite: sessionCookie.sameSite || 'None',
+      httpOnly: cookies.some((cookie) => cookie.httpOnly),
+      secure: cookies.some((cookie) => cookie.secure),
+      sameSite: sameSiteValue === 'Strict' || sameSiteValue === 'Lax' || sameSiteValue === 'None'
+        ? sameSiteValue
+        : 'Unknown',
+      analyzedCookies: cookies.length,
     };
   }
 
-  private async attemptLogin(page: any, creds: AuthCredentials): Promise<boolean> {
+  private async attemptLogin(page: Page, creds: AuthCredentials): Promise<boolean> {
     try {
+      const startUrl = page.url();
       await page.type('input[type="password"]', creds.password);
       
       const userField = await page.$('input[type="text"], input[type="email"]');
@@ -78,7 +85,7 @@ export class AuthService {
       ]);
 
       const currentUrl = page.url();
-      return currentUrl !== page.url(); 
+      return currentUrl !== startUrl;
     } catch {
       return false;
     }

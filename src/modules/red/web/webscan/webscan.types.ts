@@ -16,6 +16,7 @@ export interface WebScanResult {
 
   links: string[];
   endpoints: string[];
+  findings: any[];
 
   forms: {
     action: string;
@@ -27,8 +28,21 @@ export interface WebScanResult {
 
   score?: any;
 
+  analyzedEndpoints: string[];
+  discoveredEndpoints: string[];
+  endpointDetails: {
+    endpoint: string;
+    status?: number;
+    discovered: boolean;
+    analyzed: boolean;
+    checks: string[];
+    findings: string[];
+  }[];
+
   meta: {
     scannedUrls: number;
     duration: number;
+    endpointsAnalyzed: number;
+    endpointsDiscovered: number;
   };
 }

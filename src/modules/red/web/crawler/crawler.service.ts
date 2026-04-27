@@ -3,6 +3,11 @@ import { InteractionService } from '../../../../core/browser/interaction.service
 import { HttpService } from '../../../../core/http/http.service';
 import { FingerprintService } from '../../../blue/web/fingerprint/fingerprint.service';
 
+export interface CrawlResult {
+  analyzed: string[];
+  discovered: string[];
+}
+
 @Injectable()
 export class CrawlerService {
   constructor(
@@ -11,10 +16,18 @@ export class CrawlerService {
     private readonly fingerprint: FingerprintService,
   ) {}
 
-  async crawl(url: string, depth: number): Promise<string[]> {
+  async crawl(url: string, depth: number): Promise<CrawlResult> {
+    const analyzed = new Set<string>([url]);
+    const discovered = new Set<string>();
+
     try {
       const res = await this.http.get(url);
-      if (!res?.data) return [];
+      if (!res?.data) {
+        return {
+          analyzed: [...analyzed],
+          discovered: [...discovered],
+        };
+      }
 
       const body = String(res.data);
 
@@ -22,15 +35,31 @@ export class CrawlerService {
       const requiresJs = techs.some((t) => t.isRisk || t.name === 'React' || t.name === 'Angular');
 
       const staticLinks = this.extractStaticLinks(body, url);
+      staticLinks.forEach((link) => discovered.add(link));
 
       if (requiresJs) {
         const dynamicLinks = await this.deepCrawl(url);
-        return [...new Set([...staticLinks, ...dynamicLinks])];
+        dynamicLinks.forEach((link) => {
+          discovered.add(link);
+          analyzed.add(link);
+        });
       }
 
-      return staticLinks;
+      if (depth > 1) {
+        for (const link of [...discovered].slice(0, 10)) {
+          analyzed.add(link);
+        }
+      }
+
+      return {
+        analyzed: [...analyzed],
+        discovered: [...discovered],
+      };
     } catch {
-      return [];
+      return {
+        analyzed: [...analyzed],
+        discovered: [...discovered],
+      };
     }
   }
 
@@ -57,15 +86,5 @@ export class CrawlerService {
       }
     }
     return [...new Set(links)];
-  }
-
-  private normalizeHeaders(headers: any): Record<string, string> {
-    const normalized: Record<string, string> = {};
-    for (const key in headers) {
-      if (headers[key]) {
-        normalized[key.toLowerCase()] = String(headers[key]);
-      }
-    }
-    return normalized;
   }
 }

@@ -29,6 +29,13 @@ export class WebAnalyzerService {
 
       const headers = response.headers;
 
+      const asSeverity = (severity: string): SecurityHeaderResult['severity'] => {
+        if (severity === 'LOW' || severity === 'MEDIUM' || severity === 'HIGH') {
+          return severity;
+        }
+        return 'LOW';
+      };
+
       for (const check of this.criticalHeaders) {
         const headerValue = headers[check.name.toLowerCase()];
 
@@ -37,13 +44,21 @@ export class WebAnalyzerService {
             header: check.name,
             status: 'VULNERABLE',
             finding: check.desc,
-            severity: check.severity as any,
+            severity: asSeverity(check.severity),
           });
         } else {
+          const headerText = String(headerValue).substring(0, 80);
+          const qualityIssue =
+            check.name === 'Strict-Transport-Security' && !/max-age=\d+/i.test(headerText)
+              ? ' (max-age ausente ou invalido)'
+              : check.name === 'Content-Security-Policy' && !/default-src/i.test(headerText)
+                ? ' (policy fraca/ausente de default-src)'
+                : '';
+
           results.push({
             header: check.name,
             status: 'SECURE',
-            finding: `Configurado: ${String(headerValue).substring(0, 40)}`,
+            finding: `Configurado: ${headerText}${qualityIssue}`,
             severity: 'LOW',
           });
         }
