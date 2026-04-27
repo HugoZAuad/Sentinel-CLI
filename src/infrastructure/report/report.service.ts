@@ -1,282 +1,732 @@
 import { Injectable } from '@nestjs/common';
 import * as fs from 'fs';
 import * as path from 'path';
-import { BrowserService } from '../../core/browser/browser.service';
+import * as puppeteer from 'puppeteer';
+
+export interface Finding {
+  type: string;
+  evidence: string;
+  severity: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+  team: 'RED' | 'BLUE';
+  category?: 'webscan' | 'portscan';
+}
+
+export interface ScanMeta {
+  duration?: string;
+  portsScanned?: number;
+  endpointsScanned?: number;
+  headersAnalyzed?: number;
+  openPorts?: { port: number; service: string; version?: string }[];
+}
 
 @Injectable()
 export class ReportService {
-  constructor(private readonly browserService: BrowserService) {}
+  async generatePdf(
+    target: string,
+    score: number,
+    findings: Finding[],
+    meta?: ScanMeta,
+  ): Promise<string> {
+    const redFindings = findings.filter((f) => f.team === 'RED');
+    const blueFindings = findings.filter((f) => f.team === 'BLUE');
 
-  async generatePdf(scanData: any, fileName: string, reportType: 'FULL' | 'NETWORK' = 'FULL'): Promise<string> {
-    const page = await this.browserService.newPage();
-    try {
-      const html = this.compileTemplate(scanData, reportType);
-      await page.setContent(html, { waitUntil: 'networkidle0' });
+    const redWeb = redFindings.filter((f) => f.category === 'webscan');
+    const redPort = redFindings.filter((f) => f.category === 'portscan');
+    const blueWeb = blueFindings.filter((f) => f.category === 'webscan');
+    const bluePort = blueFindings.filter((f) => f.category === 'portscan');
 
-      const reportsDir = path.resolve(process.cwd(), 'reports');
-      if (!fs.existsSync(reportsDir)) fs.mkdirSync(reportsDir, { recursive: true });
+    const redWebFallback = redWeb.length === 0 && redPort.length === 0 ? redFindings : redWeb;
+    const blueWebFallback = blueWeb.length === 0 && bluePort.length === 0 ? blueFindings : blueWeb;
 
-      const filePath = path.join(reportsDir, `${fileName}.pdf`);
-      await page.pdf({
-        path: filePath,
-        format: 'A4',
-        printBackground: true,
-        margin: { top: '10mm', bottom: '10mm', left: '10mm', right: '10mm' }
-      });
+    const scoreColor = score >= 80 ? '#00c896' : score >= 50 ? '#f5a623' : '#e8394a';
+    const scoreLabel = score >= 80 ? 'SEGURO' : score >= 50 ? 'ATENÇÃO' : 'CRÍTICO';
+    const scoreBg =
+      score >= 80 ? 'rgba(0,200,150,0.08)' : score >= 50 ? 'rgba(245,166,35,0.08)' : 'rgba(232,57,74,0.08)';
 
-      return filePath;
-    } finally {
-      await page.close();
-    }
-  }
+    const totalCritical = findings.filter((f) => f.severity === 'CRITICAL').length;
+    const totalHigh     = findings.filter((f) => f.severity === 'HIGH').length;
+    const totalMedium   = findings.filter((f) => f.severity === 'MEDIUM').length;
+    const totalLow      = findings.filter((f) => f.severity === 'LOW').length;
+    const maxBar        = Math.max(totalCritical, totalHigh, totalMedium, totalLow, 1);
+    const totalFindings = findings.length;
+    const totalRed = redFindings.length;
+    const totalBlue = blueFindings.length;
+    const redShare = totalFindings > 0 ? Math.round((totalRed / totalFindings) * 100) : 0;
+    const blueShare = totalFindings > 0 ? 100 - redShare : 0;
+    const scoreImpact =
+      totalCritical * 20 + totalHigh * 10 + totalMedium * 5 + totalLow * 2;
+    const residualRisk = Math.max(0, 100 - score);
 
-  private compileTemplate(scan: any, type: 'FULL' | 'NETWORK'): string {
-    const date = new Date(scan.createdAt || Date.now()).toLocaleString('pt-BR');
-    const isNetwork = type === 'NETWORK';
-    
-    let bodyContent = '';
+    const severityOrder: Record<string, number> = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3 };
 
-    if (isNetwork) {
-      const ports = scan.ports || [];
-      bodyContent = `
-        <div class="section-title">📊 Visão Geral da Rede</div>
-        <div class="summary-grid">
-          <div class="card">
-            <label>HOST ALVO</label>
-            <div class="value">${scan.target}</div>
-          </div>
-          <div class="card">
-            <label>VARREDURA</label>
-            <div class="value">${scan.startPort} — ${scan.endPort}</div>
-          </div>
-        </div>
-
-        <div class="section-title">🔍 Portas Identificadas</div>
-        ${ports.length > 0 ? `
-          <table>
-            <thead>
+    const renderFindingsTable = (list: Finding[], emptyMsg: string): string => {
+      if (list.length === 0) {
+        return `<div class="no-findings"><span class="check-icon">✔</span>${emptyMsg}</div>`;
+      }
+      const sorted = [...list].sort((a, b) => severityOrder[a.severity] - severityOrder[b.severity]);
+      return `
+        <table>
+          <thead>
+            <tr>
+              <th style="width:110px">Severidade</th>
+              <th style="width:200px">Ameaça / Controle</th>
+              <th>Evidência e Recomendação</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${sorted.map((f) => `
               <tr>
-                <th style="width: 80px">PORTA</th>
-                <th style="width: 150px">SERVIÇO</th>
-                <th>BANNER / EVIDÊNCIA TÉCNICA</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${ports.map((p: any) => `
-                <tr>
-                  <td><span class="port-badge">${p.port}</span></td>
-                  <td class="service-name">${p.service}</td>
-                  <td><code class="evidence-code">${p.banner || 'No banner grab'}</code></td>
-                </tr>
-              `).join('')}
-            </tbody>
-          </table>
-        ` : `
-          <div class="empty-state">⚠️ Nenhuma porta aberta foi detectada no perímetro analisado.</div>
-        `}
-      `;
-    } else {
-      const redFindings = scan.findings?.filter((f: any) => f.team === 'RED') || [];
-      const blueFindings = scan.findings?.filter((f: any) => f.team === 'BLUE') || [];
-      const scoreColor = scan.score > 70 ? '#10b981' : scan.score > 40 ? '#f59e0b' : '#ef4444';
+                <td><span class="badge badge-${f.severity}">${f.severity}</span></td>
+                <td class="finding-type">${f.type}</td>
+                <td class="finding-evidence">${f.evidence}</td>
+              </tr>`).join('')}
+          </tbody>
+        </table>`;
+    };
 
-      bodyContent = `
-        <div class="section-title">🛡️ Postura de Segurança</div>
-        <div class="summary-grid">
-          <div class="card">
-            <label>ALVO DA AUDITORIA</label>
-            <div class="value">${scan.target}</div>
-            <div class="status-pill ${scan.score > 70 ? 'success' : 'danger'}">
-              ${scan.score > 70 ? '● SISTEMA SEGURO' : '● VULNERABILIDADE DETECTADA'}
-            </div>
-          </div>
-          <div class="card" style="text-align: center">
-            <label>SCORE DE SEGURANÇA</label>
-            <div class="score-container">
-               <div class="score-value" style="color: ${scoreColor}">${scan.score}<span>/100</span></div>
-               <div class="score-bar-bg"><div class="score-bar-fill" style="width: ${scan.score}%; background: ${scoreColor}"></div></div>
-            </div>
-          </div>
-        </div>
+    const renderPortsTable = (ports: { port: number; service: string; version?: string }[]): string => {
+      if (!ports || ports.length === 0) return '';
+      return `
+        <table>
+          <thead>
+            <tr>
+              <th style="width:80px">Porta</th>
+              <th style="width:160px">Serviço</th>
+              <th>Versão Detectada</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${ports.map((p) => `
+              <tr>
+                <td><code class="port-code">${p.port}/tcp</code></td>
+                <td>${p.service}</td>
+                <td>${p.version ?? '<span style="color:#888;font-style:italic">Não identificada</span>'}</td>
+              </tr>`).join('')}
+          </tbody>
+        </table>`;
+    };
 
-        <div class="section-title">🔴 Vulnerabilidades (Red Team)</div>
-        ${redFindings.length > 0 ? `
-          <table>
-            <thead><tr><th>TIPO</th><th>EVIDÊNCIA</th><th style="width: 100px">RISCO</th></tr></thead>
-            <tbody>
-              ${redFindings.map((f: any) => `
-                <tr>
-                  <td style="font-weight: 600">${f.type}</td>
-                  <td><code class="evidence-code">${f.evidence}</code></td>
-                  <td><span class="severity-badge ${f.severity?.toLowerCase()}">${f.severity}</span></td>
-                </tr>
-              `).join('')}
-            </tbody>
-          </table>
-        ` : `<div class="empty-state">✅ Nenhuma vulnerabilidade ofensiva encontrada.</div>`}
+    const htmlContent = `
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <title>Sentinel Scan — Relatório de Segurança</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:ital,wght@0,300;0,400;0,600;0,700;1,400&display=swap');
 
-        <div class="section-title">🔵 Controles Defensivos (Blue Team)</div>
-        ${blueFindings.length > 0 ? `
-          <table>
-            <thead><tr><th>CONTROLE ANALISADO</th><th>OBSERVAÇÃO</th><th style="width: 100px">STATUS</th></tr></thead>
-            <tbody>
-              ${blueFindings.map((f: any) => `
-                <tr>
-                  <td style="font-weight: 600">${f.type}</td>
-                  <td>${f.evidence}</td>
-                  <td><span class="severity-badge ${f.severity?.toLowerCase() === 'low' ? 'success-badge' : 'warning-badge'}">${f.severity === 'LOW' ? 'SEGURO' : 'AVISO'}</span></td>
-                </tr>
-              `).join('')}
-            </tbody>
-          </table>
-        ` : `<div class="empty-state">ℹ️ Nenhum controle defensivo foi registrado.</div>`}
-      `;
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0d1117;
+      --surface: #161b22;
+      --surface-2: #1e2530;
+      --border: #2a3140;
+      --text: #e6edf3;
+      --text-muted: #7d8590;
+      --text-dim: #484f58;
+      --red: #e8394a;
+      --red-muted: rgba(232,57,74,0.12);
+      --blue: #3b8beb;
+      --blue-muted: rgba(59,139,235,0.12);
+      --green: #00c896;
+      --green-muted: rgba(0,200,150,0.10);
+      --amber: #f5a623;
+      --accent: #5b8dee;
+      --mono: 'IBM Plex Mono', monospace;
+      --sans: 'IBM Plex Sans', sans-serif;
     }
 
-    return `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <meta charset="UTF-8">
-        <style>
-          @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=JetBrains+Mono&display=swap');
-          
-          :root {
-            --bg: #ffffff;
-            --sidebar: #0f172a;
-            --text-main: #1e293b;
-            --text-muted: #64748b;
-            --accent: #3b82f6;
-            --border: #e2e8f0;
-            --danger: #ef4444;
-            --success: #10b981;
-            --warning: #f59e0b;
-          }
+    /* ── PRINT / PDF ──────────────────────────────── */
+    @page { size: A4; margin: 0; }
 
-          body { 
-            font-family: 'Inter', sans-serif; 
-            margin: 0; padding: 0; 
-            color: var(--text-main);
-            background-color: var(--bg);
-          }
+    html, body {
+      background: var(--bg);
+      font-family: var(--sans);
+      font-size: 12.5px;
+      color: var(--text);
+      margin: 0;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
 
-          .header { 
-            background: var(--sidebar); 
-            color: white; 
-            padding: 40px 30px; 
-            display: flex; 
-            justify-content: space-between; 
-            align-items: center;
-          }
+    /* Never break inside these elements */
+    .score-banner,
+    .stats-row,
+    .risk-matrix,
+    .no-findings,
+    .header,
+    .footer,
+    tr { page-break-inside: avoid; break-inside: avoid; }
 
-          .header-title h1 { margin: 0; font-size: 22px; letter-spacing: -0.5px; font-weight: 700; }
-          .header-title p { margin: 5px 0 0; font-size: 12px; opacity: 0.6; text-transform: uppercase; }
-          .header-meta { text-align: right; font-size: 12px; }
+    /* Keep heading attached to the content that follows */
+    .section-heading,
+    .sub-section-header,
+    th { page-break-after: avoid; break-after: avoid; }
 
-          .container { padding: 40px; }
+    /* ── LAYOUT ───────────────────────────────────── */
+    .page { max-width: 100%; }
+    .sheet {
+      padding: 12mm 14mm 12mm 14mm;
+    }
+    .sheet + .sheet {
+      page-break-before: always;
+      break-before: page;
+    }
 
-          .section-title { 
-            font-size: 14px; 
-            font-weight: 700; 
-            color: var(--text-muted); 
-            text-transform: uppercase; 
-            margin-bottom: 15px;
-            margin-top: 30px;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-          }
+    /* Let long findings sections flow to next page instead of overflowing bottom */
+    .sub-section,
+    .open-ports-section,
+    table {
+      page-break-inside: auto;
+      break-inside: auto;
+    }
+    thead { display: table-header-group; }
 
-          .summary-grid { display: grid; grid-template-columns: 1.5fr 1fr; gap: 20px; }
-          
-          .card { 
-            border: 1px solid var(--border); 
-            padding: 20px; 
-            border-radius: 12px; 
-            background: #f8fafc;
-          }
+    /* ── HEADER ───────────────────────────────────── */
+    .header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      padding-bottom: 22px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 26px;
+    }
+    .brand { display: flex; align-items: center; gap: 13px; }
+    .brand-icon {
+      width: 42px; height: 42px;
+      background: linear-gradient(135deg, #1e2a3a, #253045);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 20px;
+    }
+    .brand-name { font-size: 19px; font-weight: 700; color: var(--text); }
+    .brand-sub  { font-size: 10px; color: var(--text-muted); font-family: var(--mono); margin-top: 2px; }
+    .header-meta { text-align: right; font-size: 11px; color: var(--text-muted); line-height: 1.8; font-family: var(--mono); }
+    .header-meta strong { color: var(--text); }
+    .target-chip {
+      display: inline-block;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 4px; padding: 1px 9px;
+      font-size: 11px; font-family: var(--mono); color: var(--accent); margin-top: 3px;
+    }
 
-          .card label { font-size: 10px; font-weight: 700; color: var(--text-muted); display: block; margin-bottom: 8px; }
-          .card .value { font-size: 18px; font-weight: 700; color: var(--sidebar); }
+    /* ── SCORE BANNER ─────────────────────────────── */
+    .score-banner {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 12px; padding: 22px 28px;
+      margin-bottom: 18px;
+      display: flex; align-items: center; gap: 30px;
+    }
+    .score-circle {
+      flex-shrink: 0; width: 92px; height: 92px; border-radius: 50%;
+      background: ${scoreBg}; border: 3px solid ${scoreColor};
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+    }
+    .score-number { font-size: 27px; font-weight: 700; color: ${scoreColor}; font-family: var(--mono); line-height: 1; }
+    .score-max   { font-size: 10px; color: var(--text-muted); font-family: var(--mono); }
+    .score-label-chip {
+      display: inline-block; background: ${scoreBg}; color: ${scoreColor};
+      border: 1px solid ${scoreColor}; border-radius: 4px;
+      padding: 1px 7px; font-size: 9px; font-weight: 700;
+      font-family: var(--mono); letter-spacing: 1px; margin-top: 4px;
+    }
+    .score-info h2 { font-size: 14px; font-weight: 600; margin-bottom: 6px; }
+    .score-info p  { color: var(--text-muted); line-height: 1.65; font-size: 11.5px; }
 
-          .status-pill { 
-            display: inline-block; 
-            padding: 4px 10px; 
-            border-radius: 20px; 
-            font-size: 10px; 
-            font-weight: 700; 
-            margin-top: 12px; 
-          }
-          .status-pill.success { background: #dcfce7; color: #15803d; }
-          .status-pill.danger { background: #fee2e2; color: #b91c1c; }
+    /* ── STAT CARDS ───────────────────────────────── */
+    .stats-row { display: grid; grid-template-columns: repeat(4,1fr); gap: 10px; margin-bottom: 18px; }
+    .stat-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; padding: 13px 15px;
+    }
+    .stat-label { font-size: 9px; font-family: var(--mono); letter-spacing: 0.8px; color: var(--text-muted); text-transform: uppercase; }
+    .stat-value { font-size: 25px; font-weight: 700; font-family: var(--mono); margin-top: 3px; }
+    .stat-card.critical .stat-value { color: #e8394a; }
+    .stat-card.high     .stat-value { color: #e74c3c; }
+    .stat-card.medium   .stat-value { color: var(--amber); }
+    .stat-card.low      .stat-value { color: #f1c40f; }
 
-          .score-container { padding: 10px 0; }
-          .score-value { font-size: 42px; font-weight: 700; margin-bottom: 5px; }
-          .score-value span { font-size: 16px; opacity: 0.5; }
-          .score-bar-bg { width: 100%; height: 8px; background: #e2e8f0; border-radius: 10px; overflow: hidden; }
-          .score-bar-fill { height: 100%; border-radius: 10px; transition: width 1s ease; }
+    /* ── RISK MATRIX ──────────────────────────────── */
+    .risk-matrix {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; padding: 16px 20px; margin-bottom: 0;
+    }
+    .risk-matrix h4 {
+      font-size: 9px; font-family: var(--mono); font-weight: 700;
+      letter-spacing: 0.8px; text-transform: uppercase; color: var(--text-muted); margin-bottom: 11px;
+    }
+    .risk-bar-row   { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+    .risk-bar-label { font-size: 9px; font-family: var(--mono); width: 60px; text-align: right; }
+    .risk-bar-track { flex: 1; height: 5px; background: var(--surface-2); border-radius: 3px; overflow: hidden; }
+    .risk-bar-fill  { height: 100%; border-radius: 3px; }
+    .risk-bar-count { font-size: 9px; font-family: var(--mono); width: 16px; }
 
-          table { width: 100%; border-collapse: collapse; margin-top: 10px; border-radius: 8px; overflow: hidden; border: 1px solid var(--border); }
-          th { background: #f1f5f9; padding: 12px 15px; text-align: left; font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; }
-          td { padding: 14px 15px; border-bottom: 1px solid var(--border); font-size: 13px; vertical-align: top; }
+    /* ── INSIGHTS ─────────────────────────────────── */
+    .insights-grid {
+      margin-top: 14px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+    .insight-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; padding: 14px 16px;
+      page-break-inside: avoid; break-inside: avoid;
+    }
+    .insight-card h4 {
+      font-size: 9px; font-family: var(--mono); font-weight: 700;
+      letter-spacing: 0.8px; text-transform: uppercase; color: var(--text-muted);
+      margin-bottom: 10px;
+    }
+    .team-chart-wrap { display: flex; align-items: center; gap: 14px; }
+    .team-donut {
+      width: 78px; height: 78px; border-radius: 50%;
+      flex-shrink: 0;
+      background: conic-gradient(var(--red) 0 ${redShare}%, var(--blue) ${redShare}% 100%);
+      position: relative;
+    }
+    .team-donut::after {
+      content: '';
+      position: absolute; inset: 11px;
+      border-radius: 50%;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+    }
+    .team-legend { flex: 1; display: flex; flex-direction: column; gap: 7px; }
+    .team-legend-row { display: flex; align-items: center; justify-content: space-between; }
+    .team-legend-left { display: flex; align-items: center; gap: 6px; font-size: 10px; color: var(--text-muted); }
+    .legend-dot { width: 7px; height: 7px; border-radius: 50%; }
+    .legend-dot.red { background: var(--red); }
+    .legend-dot.blue { background: var(--blue); }
+    .team-legend-val { font-size: 10px; color: var(--text); font-family: var(--mono); }
+    .impact-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+    .impact-label { width: 56px; text-align: right; font-size: 9px; font-family: var(--mono); }
+    .impact-track { flex: 1; height: 6px; background: var(--surface-2); border-radius: 3px; overflow: hidden; }
+    .impact-fill { height: 100%; border-radius: 3px; }
+    .impact-val { width: 32px; font-size: 9px; font-family: var(--mono); text-align: right; color: var(--text-muted); }
+    .metrics-grid {
+      margin-top: 10px;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+    }
+    .metric-pill {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px;
+    }
+    .metric-pill-val { font-size: 14px; font-family: var(--mono); color: var(--accent); font-weight: 700; }
+    .metric-pill-lbl { font-size: 8px; font-family: var(--mono); color: var(--text-muted); letter-spacing: 0.6px; text-transform: uppercase; }
 
-          .port-badge { background: var(--sidebar); color: white; padding: 4px 8px; border-radius: 4px; font-family: 'JetBrains Mono', monospace; font-size: 12px; }
-          .service-name { font-weight: 700; color: var(--accent); }
-          
-          .evidence-code { 
-            font-family: 'JetBrains Mono', monospace; 
-            font-size: 11px; 
-            background: #f1f5f9; 
-            padding: 4px 8px; 
-            border-radius: 4px; 
-            display: block;
-            white-space: pre-wrap;
-            word-break: break-all;
-          }
+    /* ── METHODOLOGY ──────────────────────────────── */
+    .methodology-section {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 12px; padding: 20px 24px;
+    }
+    .methodology-section h3 {
+      font-size: 10px; font-weight: 700; letter-spacing: 0.5px; color: var(--text-muted);
+      text-transform: uppercase; font-family: var(--mono);
+      margin-bottom: 14px; padding-bottom: 8px; border-bottom: 1px solid var(--border);
+    }
+    .method-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+    .method-block h4 {
+      font-size: 11px; font-weight: 600; color: var(--text);
+      margin-bottom: 8px; display: flex; align-items: center; gap: 7px;
+    }
+    .team-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+    .team-dot.red  { background: var(--red); }
+    .team-dot.blue { background: var(--blue); }
+    .method-list { list-style: none; }
+    .method-list li {
+      font-size: 10.5px; color: var(--text-muted);
+      padding: 4px 0 4px 12px; position: relative;
+      border-bottom: 1px solid var(--border); line-height: 1.5;
+    }
+    .method-list li:last-child { border-bottom: none; }
+    .method-list li::before { content: '›'; position: absolute; left: 0; color: var(--text-dim); }
+    .method-list li strong  { color: var(--text); font-weight: 600; }
+    .scan-stats {
+      display: flex; gap: 22px; margin-top: 14px;
+      padding-top: 14px; border-top: 1px solid var(--border); flex-wrap: wrap;
+    }
+    .scan-stat { display: flex; flex-direction: column; gap: 2px; }
+    .scan-stat-val { font-size: 16px; font-weight: 700; font-family: var(--mono); color: var(--accent); }
+    .scan-stat-lbl { font-size: 9px; color: var(--text-muted); font-family: var(--mono); text-transform: uppercase; letter-spacing: 0.5px; }
 
-          .severity-badge { 
-            padding: 4px 8px; 
-            border-radius: 6px; 
-            font-size: 10px; 
-            font-weight: 700; 
-            text-transform: uppercase;
-            display: inline-block;
-          }
-          .critical { background: #7f1d1d; color: white; }
-          .high { background: #ef4444; color: white; }
-          .medium { background: #f59e0b; color: white; }
-          .low { background: #10b981; color: white; }
-          .success-badge { background: #dcfce7; color: #15803d; }
-          .warning-badge { background: #fef9c3; color: #854d0e; }
+    /* ── SECTION HEADING ──────────────────────────── */
+    .section-heading { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+    .team-badge {
+      font-size: 9px; font-family: var(--mono); font-weight: 700;
+      letter-spacing: 1.5px; padding: 3px 8px; border-radius: 4px;
+    }
+    .team-badge.red  { background: var(--red-muted);  color: var(--red);  border: 1px solid rgba(232,57,74,0.3); }
+    .team-badge.blue { background: var(--blue-muted); color: var(--blue); border: 1px solid rgba(59,139,235,0.3); }
+    .section-heading h2 { font-size: 16px; font-weight: 700; color: var(--text); }
+    .section-desc { font-size: 11px; color: var(--text-muted); line-height: 1.65; margin-bottom: 14px; }
 
-          .empty-state { padding: 30px; text-align: center; color: var(--text-muted); background: #f8fafc; border: 2px dashed var(--border); border-radius: 12px; margin-top: 20px; }
+    /* ── SUB-SECTION ──────────────────────────────── */
+    .sub-section { margin-bottom: 20px; }
+    .sub-section-header { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; }
+    .sub-section-header h3 { font-size: 12px; font-weight: 600; color: var(--text); }
+    .sub-icon {
+      font-size: 12px; width: 23px; height: 23px;
+      border-radius: 5px; display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+    }
+    .sub-icon.web  { background: rgba(232,57,74,0.12); }
+    .sub-icon.port { background: rgba(91,141,238,0.12); }
+    .sub-caption { font-size: 10px; color: var(--text-muted); font-family: var(--mono); line-height: 1.5; margin-bottom: 8px; }
 
-          .footer { margin-top: 50px; border-top: 1px solid var(--border); padding-top: 20px; font-size: 10px; color: var(--text-muted); text-align: center; }
-        </style>
-      </head>
-      <body>
-        <div class="header">
-          <div class="header-title">
-            <h1>SENTINEL<span>SCAN</span></h1>
-            <p>Cybersecurity Intelligence System</p>
-          </div>
-          <div class="header-meta">
-            <strong>DATA DO RELATÓRIO</strong><br>
-            ${date}<br>
-            <span style="color: var(--accent)">ID: ${scan.id.substring(0, 8)}</span>
+    /* ── TABLE ────────────────────────────────────── */
+    table { width: 100%; border-collapse: collapse; font-size: 11px; }
+    thead tr { background: var(--surface-2); }
+    th {
+      padding: 9px 11px; text-align: left; font-size: 9px; font-weight: 700;
+      font-family: var(--mono); letter-spacing: 0.8px; text-transform: uppercase;
+      color: var(--text-muted); border-bottom: 1px solid var(--border);
+    }
+    td {
+      padding: 9px 11px; border-bottom: 1px solid var(--border);
+      vertical-align: top; color: var(--text); line-height: 1.55;
+    }
+    tr:last-child td { border-bottom: none; }
+    tbody tr            { background: var(--surface); }
+    tbody tr:nth-child(even) { background: #141920; }
+    .finding-type     { font-weight: 600; font-size: 11px; }
+    .finding-evidence { color: var(--text-muted); font-size: 10.5px; }
+
+    code, .port-code {
+      font-family: var(--mono); font-size: 10px;
+      background: var(--surface-2); border: 1px solid var(--border);
+      border-radius: 3px; padding: 1px 4px; color: var(--accent);
+    }
+
+    /* ── BADGES ───────────────────────────────────── */
+    .badge { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 9px; font-weight: 700; font-family: var(--mono); letter-spacing: 0.4px; }
+    .badge-CRITICAL { background: rgba(232,57,74,0.20);  color: #ff5c6e; border: 1px solid rgba(232,57,74,0.35); }
+    .badge-HIGH     { background: rgba(231,76,60,0.15);  color: #ff7043; border: 1px solid rgba(231,76,60,0.3); }
+    .badge-MEDIUM   { background: rgba(245,166,35,0.15); color: #f5a623; border: 1px solid rgba(245,166,35,0.3); }
+    .badge-LOW      { background: rgba(241,196,15,0.12); color: #f1c40f; border: 1px solid rgba(241,196,15,0.25); }
+
+    /* ── NO FINDINGS ──────────────────────────────── */
+    .no-findings {
+      display: flex; align-items: center; gap: 9px;
+      background: var(--green-muted); color: var(--green);
+      padding: 11px 15px; border-radius: 7px;
+      border: 1px solid rgba(0,200,150,0.25);
+      font-size: 10.5px; font-weight: 600; font-family: var(--mono);
+    }
+    .check-icon { font-size: 13px; }
+
+    /* ── DIVIDER ──────────────────────────────────── */
+    .divider { border: none; border-top: 1px solid var(--border); margin: 28px 0 0; }
+
+    /* ── OPEN PORTS ───────────────────────────────── */
+    .open-ports-section {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; padding: 15px 18px; margin-bottom: 14px;
+    }
+    .open-ports-section h4 {
+      font-size: 9px; font-family: var(--mono); font-weight: 700;
+      letter-spacing: 0.8px; text-transform: uppercase; color: var(--text-muted); margin-bottom: 11px;
+    }
+
+    /* ── FOOTER ───────────────────────────────────── */
+    .footer {
+      margin-top: 36px; padding-top: 14px;
+      border-top: 1px solid var(--border);
+      display: flex; justify-content: space-between; align-items: flex-end;
+    }
+    .footer-left  { font-size: 9px; color: var(--text-dim); line-height: 1.8; font-family: var(--mono); }
+    .footer-right { font-size: 9px; color: var(--text-dim); text-align: right; font-family: var(--mono); }
+    .confidential {
+      display: inline-block; background: var(--red-muted); color: var(--red);
+      border: 1px solid rgba(232,57,74,0.3); border-radius: 3px;
+      padding: 1px 6px; font-size: 8px; font-weight: 700;
+      letter-spacing: 1.5px; text-transform: uppercase;
+    }
+  </style>
+</head>
+<body>
+<div class="page">
+  <div class="sheet">
+
+  <!-- ══════════════════════════════════════════════
+       PAGE 1 — HEADER + SCORE + STATS + RISK
+       ══════════════════════════════════════════════ -->
+  <div class="header">
+    <div class="brand">
+      <div class="brand-icon">🛡️</div>
+      <div>
+        <div class="brand-name">SENTINEL SCAN</div>
+        <div class="brand-sub">SECURITY AUDIT REPORT · SENTINEL CORE v2.0</div>
+      </div>
+    </div>
+    <div class="header-meta">
+      <div><strong>Alvo:</strong></div>
+      <div class="target-chip">${target}</div>
+      <div style="margin-top:5px"><strong>Data:</strong> ${new Date().toLocaleString('pt-BR')}</div>
+      <div><strong>Modo:</strong> Passivo + Ativo (Non-Destructive)</div>
+    </div>
+  </div>
+
+  <div class="score-banner">
+    <div class="score-circle">
+      <div class="score-number">${score}</div>
+      <div class="score-max">/100</div>
+      <div class="score-label-chip">${scoreLabel}</div>
+    </div>
+    <div class="score-info">
+      <h2>Índice Global de Segurança</h2>
+      <p>
+        O <em>Security Score</em> consolida os módulos Red Team e Blue Team em uma pontuação única.
+        Cada achado reduz a pontuação conforme sua severidade: <strong>CRITICAL −20</strong>, <strong>HIGH −10</strong>,
+        <strong>MEDIUM −5</strong>, <strong>LOW −2</strong>. Base: 100.
+        Scores abaixo de 50 indicam exposição crítica e exigem ação imediata.
+      </p>
+    </div>
+  </div>
+
+  <div class="stats-row">
+    <div class="stat-card critical"><div class="stat-label">Critical</div><div class="stat-value">${totalCritical}</div></div>
+    <div class="stat-card high">    <div class="stat-label">High</div>    <div class="stat-value">${totalHigh}</div></div>
+    <div class="stat-card medium">  <div class="stat-label">Medium</div>  <div class="stat-value">${totalMedium}</div></div>
+    <div class="stat-card low">     <div class="stat-label">Low</div>     <div class="stat-value">${totalLow}</div></div>
+  </div>
+
+  <div class="risk-matrix">
+    <h4>Distribuição de Risco</h4>
+    ${[
+      { label: 'CRITICAL', count: totalCritical, color: '#e8394a' },
+      { label: 'HIGH',     count: totalHigh,     color: '#e74c3c' },
+      { label: 'MEDIUM',   count: totalMedium,   color: '#f5a623' },
+      { label: 'LOW',      count: totalLow,      color: '#f1c40f' },
+    ].map(({ label, count, color }) => `
+      <div class="risk-bar-row">
+        <div class="risk-bar-label" style="color:${color}">${label}</div>
+        <div class="risk-bar-track">
+          <div class="risk-bar-fill" style="width:${(count / maxBar) * 100}%;background:${color}"></div>
+        </div>
+        <div class="risk-bar-count" style="color:${color}">${count}</div>
+      </div>`).join('')}
+  </div>
+
+    <div class="insights-grid">
+      <div class="insight-card">
+        <h4>Composição de Achados por Time</h4>
+        <div class="team-chart-wrap">
+          <div class="team-donut"></div>
+          <div class="team-legend">
+            <div class="team-legend-row">
+              <div class="team-legend-left"><span class="legend-dot red"></span>Red Team</div>
+              <div class="team-legend-val">${totalRed} (${redShare}%)</div>
+            </div>
+            <div class="team-legend-row">
+              <div class="team-legend-left"><span class="legend-dot blue"></span>Blue Team</div>
+              <div class="team-legend-val">${totalBlue} (${blueShare}%)</div>
+            </div>
+            <div class="team-legend-row">
+              <div class="team-legend-left">Total de achados</div>
+              <div class="team-legend-val">${totalFindings}</div>
+            </div>
           </div>
         </div>
+      </div>
 
-        <div class="container">
-          ${bodyContent}
-          
-          <div class="footer">
-            Este documento é confidencial e destinado apenas para fins de auditoria de segurança. <br>
-            Gerado automaticamente pelo <strong>Sentinel-CLI</strong>.
+      <div class="insight-card">
+        <h4>Impacto na Pontuação</h4>
+        ${[
+        { label: 'CRITICAL', points: totalCritical * 20, color: '#e8394a' },
+        { label: 'HIGH', points: totalHigh * 10, color: '#e74c3c' },
+        { label: 'MEDIUM', points: totalMedium * 5, color: '#f5a623' },
+        { label: 'LOW', points: totalLow * 2, color: '#f1c40f' },
+      ].map(({ label, points, color }) => `
+        <div class="impact-row">
+          <div class="impact-label" style="color:${color}">${label}</div>
+          <div class="impact-track">
+            <div class="impact-fill" style="width:${scoreImpact > 0 ? (points / scoreImpact) * 100 : 0}%;background:${color}"></div>
+          </div>
+          <div class="impact-val">-${points}</div>
+        </div>`).join('')}
+
+        <div class="metrics-grid">
+          <div class="metric-pill">
+            <div class="metric-pill-val">${residualRisk}</div>
+            <div class="metric-pill-lbl">Risco Residual</div>
+          </div>
+          <div class="metric-pill">
+            <div class="metric-pill-val">${meta?.portsScanned ?? 0}</div>
+            <div class="metric-pill-lbl">Portas Cobertas</div>
+          </div>
+          <div class="metric-pill">
+            <div class="metric-pill-val">${meta?.endpointsScanned ?? 0}</div>
+            <div class="metric-pill-lbl">Endpoints Cobertos</div>
           </div>
         </div>
-      </body>
-      </html>
-    `;
+      </div>
+    </div>
+
+    </div>
+
+  <!-- ══════════════════════════════════════════════
+       PAGE 2 — METHODOLOGY
+       ══════════════════════════════════════════════ -->
+    <div class="sheet">
+    <div class="methodology-section">
+    <h3>⚙ Metodologia de Teste e Cobertura</h3>
+    <div class="method-grid">
+      <div class="method-block">
+        <h4><span class="team-dot red"></span>Red Team — Inteligência de Ameaças</h4>
+        <ul class="method-list">
+          <li><strong>Web Fingerprinting:</strong> Enumeração de tecnologias via análise de headers HTTP, cookies e corpo de resposta. Detecção de frameworks, servidores e versões expostas.</li>
+          <li><strong>CVE Lookup:</strong> Correlação das versões detectadas com o banco de dados NVD/CVE para identificação de vulnerabilidades conhecidas e exploits públicos.</li>
+          <li><strong>DOM XSS:</strong> Análise estática de sinks perigosos (eval, innerHTML, document.write) combinada com execução ativa de payloads via Puppeteer com detecção de diálogos.</li>
+          <li><strong>Injeções (SQLi / LFI / SSTI):</strong> Injeção de payloads nos parâmetros de formulários e query strings. Análise de resposta diferencial por tamanho e conteúdo de erro.</li>
+          <li><strong>Sensitive File Discovery:</strong> Enumeração de arquivos sensíveis expostos publicamente (.env, .git/config, docker-compose.yml, phpinfo, backups).</li>
+          <li><strong>Open Redirect:</strong> Verificação de redirecionamentos não validados em parâmetros de URL via análise do header Location.</li>
+          <li><strong>Port Scan:</strong> Varredura TCP concorrente (50 threads). Banner grabbing para identificação de serviços e versões em execução.</li>
+        </ul>
+      </div>
+      <div class="method-block">
+        <h4><span class="team-dot blue"></span>Blue Team — Conformidade e Hardening</h4>
+        <ul class="method-list">
+          <li><strong>HTTP Security Headers:</strong> Análise de presença e configuração de Content-Security-Policy, X-Frame-Options, X-Content-Type-Options, Referrer-Policy e Strict-Transport-Security (HSTS).</li>
+          <li><strong>Cookie Security:</strong> Inspeção de flags Secure, HttpOnly e SameSite em todos os cookies de sessão retornados nas respostas HTTP.</li>
+          <li><strong>CSRF Protection:</strong> Verificação de tokens anti-CSRF em formulários HTML via análise de campos hidden com padrão csrf/token/hash.</li>
+          <li><strong>HTTPS Enforcement:</strong> Verificação de protocolo, validade e presença de redirecionamento HTTP→HTTPS na URL alvo.</li>
+          <li><strong>Information Disclosure:</strong> Detecção de headers que revelam a stack tecnológica (X-Powered-By, Server) com versão exposta.</li>
+          <li><strong>Fingerprint de Risco:</strong> Identificação de frameworks e tecnologias com histórico de vulnerabilidades (WordPress, versões antigas de PHP, etc.).</li>
+          <li><strong>Port Security:</strong> Classificação de serviços expostos por risco e identificação de configurações padrão inseguras via banner grabbing.</li>
+        </ul>
+      </div>
+    </div>
+
+    ${meta ? `
+    <div class="scan-stats">
+      ${meta.portsScanned     !== undefined ? `<div class="scan-stat"><span class="scan-stat-val">${meta.portsScanned}</span><span class="scan-stat-lbl">Portas Varridas</span></div>` : ''}
+      ${meta.endpointsScanned !== undefined ? `<div class="scan-stat"><span class="scan-stat-val">${meta.endpointsScanned}</span><span class="scan-stat-lbl">Endpoints Analisados</span></div>` : ''}
+      ${meta.headersAnalyzed  !== undefined ? `<div class="scan-stat"><span class="scan-stat-val">${meta.headersAnalyzed}</span><span class="scan-stat-lbl">Headers Inspecionados</span></div>` : ''}
+      ${meta.duration         !== undefined ? `<div class="scan-stat"><span class="scan-stat-val">${meta.duration}</span><span class="scan-stat-lbl">Duração Total</span></div>` : ''}
+    </div>` : ''}
+  </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════
+       PAGE 3 — RED TEAM FINDINGS
+       ══════════════════════════════════════════════ -->
+  <div class="sheet">
+    <div class="section-heading">
+      <span class="team-badge red">RED TEAM</span>
+      <h2>Inteligência de Ameaças e Ataque</h2>
+    </div>
+    <p class="section-desc">
+      Achados ofensivos que representam vetores de exploração direta. CVEs identificadas, softwares desatualizados,
+      serviços com vulnerabilidades conhecidas e superfícies de ataque ativas. Itens nesta seção exigem remediação prioritária.
+    </p>
+
+    <div class="sub-section">
+      <div class="sub-section-header">
+        <div class="sub-icon web">🌐</div>
+        <h3>Web Scan — Análise de Superfície HTTP/HTTPS</h3>
+      </div>
+      <p class="sub-caption">Fingerprinting de tecnologias, CVE lookup, DOM XSS, injeções e descoberta de arquivos sensíveis via análise de resposta HTTP.</p>
+      ${renderFindingsTable(redWebFallback, 'Nenhum vetor de ataque ou CVE identificada na superfície web durante o período de varredura.')}
+    </div>
+
+    <div class="sub-section">
+      <div class="sub-section-header">
+        <div class="sub-icon port">🔌</div>
+        <h3>Port Scan — Análise de Superfície de Rede</h3>
+      </div>
+      <p class="sub-caption">Varredura TCP concorrente com banner grabbing. Identificação de serviços vulneráveis expostos à rede.</p>
+
+      ${meta?.openPorts && meta.openPorts.length > 0 ? `
+        <div class="open-ports-section">
+          <h4>Portas Abertas Detectadas</h4>
+          ${renderPortsTable(meta.openPorts)}
+        </div>` : ''}
+
+      ${renderFindingsTable(redPort, 'Nenhum serviço de rede com vulnerabilidade crítica identificada nas portas varridas.')}
+    </div>
+  </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════
+       PAGE 4 — BLUE TEAM FINDINGS
+       ══════════════════════════════════════════════ -->
+  <div class="sheet">
+    <hr class="divider" style="margin-top:0; margin-bottom:28px">
+
+    <div class="section-heading">
+      <span class="team-badge blue">BLUE TEAM</span>
+      <h2>Conformidade, Defesa e Hardening</h2>
+    </div>
+    <p class="section-desc">
+      Avaliação de controles defensivos, headers HTTP, políticas de sessão e configuração de infraestrutura.
+      Achados representam ausência de controles que ampliam a superfície de ataque indiretamente.
+    </p>
+
+    <div class="sub-section">
+      <div class="sub-section-header">
+        <div class="sub-icon web">🌐</div>
+        <h3>Web Scan — Headers de Segurança e Configuração HTTP</h3>
+      </div>
+      <p class="sub-caption">Verificação de CSP, HSTS, X-Frame-Options, Referrer-Policy, cookie flags, CSRF e information disclosure em headers.</p>
+      ${renderFindingsTable(blueWebFallback, 'Todos os controles HTTP verificados estão em conformidade com as melhores práticas (OWASP Secure Headers Project).')}
+    </div>
+
+    <div class="sub-section">
+      <div class="sub-section-header">
+        <div class="sub-icon port">🔌</div>
+        <h3>Port Scan — Exposição de Serviços e Configuração de Rede</h3>
+      </div>
+      <p class="sub-caption">Análise de serviços desnecessariamente expostos, sem autenticação ou com configurações padrão inseguras.</p>
+      ${renderFindingsTable(bluePort, 'Nenhuma exposição desnecessária ou configuração padrão insegura identificada nas portas analisadas.')}
+    </div>
+    <!-- ══════════════════════════════════════════════
+         FOOTER
+         ══════════════════════════════════════════════ -->
+    <div class="footer">
+      <div class="footer-left">
+        Gerado por <strong>Sentinel-CLI</strong> · Motor: Sentinel Core v2.0<br>
+        ${new Date().toISOString()}<br>
+        Este relatório contém informações sensíveis de infraestrutura.
+      </div>
+      <div class="footer-right">
+        <div class="confidential">Confidencial</div><br>
+        Destinado exclusivamente para fins de<br>
+        auditoria defensiva e correção de vulnerabilidades.
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>`;
+
+    const reportsDir = path.join(process.cwd(), 'reports');
+    if (!fs.existsSync(reportsDir)) {
+      fs.mkdirSync(reportsDir, { recursive: true });
+    }
+
+    const fileName = `sentinel-report-${target.replace(/[^a-zA-Z0-9]/g, '_')}_${Date.now()}.pdf`;
+    const filePath = path.join(reportsDir, fileName);
+
+    const browser = await puppeteer.launch({
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+    });
+    const page = await browser.newPage();
+    await page.setContent(htmlContent, { waitUntil: 'networkidle0' });
+    await page.pdf({
+      path: filePath,
+      format: 'A4',
+      printBackground: true,
+      margin: { top: '0', bottom: '0', left: '0', right: '0' },
+    });
+    await browser.close();
+
+    return filePath;
   }
 }
